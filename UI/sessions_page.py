@@ -364,8 +364,9 @@ class SessionsPage(QWidget):
     # ================================================================ export
 
     def _segments(self, markers: list[dict] | None = None) -> list[Segment]:
-        return Segment.from_markers(self._checked_markers() if markers is None else markers,
-                                    self.pre_spin.value(), self.post_spin.value(), self.player.duration or None)
+        cuts = self.current.game.get("cuts", []) if self.current else []
+        return Segment.per_moment(self._checked_markers() if markers is None else markers,
+                                  self.pre_spin.value(), self.post_spin.value(), self.player.duration or None, cuts)
 
     def _update_segments(self) -> None:
         segs = self._segments()

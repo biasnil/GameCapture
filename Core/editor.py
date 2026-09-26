@@ -41,6 +41,7 @@ class SourceVideo:
     duration: float
     label: str = ""
     markers: list[dict] = field(default_factory=list)   # highlights in source time (from the sidecar)
+    cuts: list[float] = field(default_factory=list)     # Highlights-mode videos: where the footage jumps
 
     @property
     def name(self) -> str:
@@ -114,12 +115,12 @@ class EditProject:
     # ---------- editing ----------
 
     def add_source(self, path: str | Path, duration: float, label: str = "",
-                   markers: list[dict] | None = None) -> SourceVideo:
+                   markers: list[dict] | None = None, cuts: list[float] | None = None) -> SourceVideo:
         path = str(path)
         existing = self.source(path)
         if existing is not None:
             return existing
-        src = SourceVideo(path, float(duration), label, list(markers or []))
+        src = SourceVideo(path, float(duration), label, list(markers or []), list(cuts or []))
         self.sources.append(src)
         return src
 
@@ -141,7 +142,7 @@ class EditProject:
 
     def highlight_windows(self, path: str, pre: float, post: float, start: float = 0.0,
                           end: float | None = None) -> list[Segment]:
-        """Your highlights in a video (between start and end), padded and merged like Sessions does."""
+        """Your highlights in a video (between start and end): one padded window per moment."""
         src = self.source(str(path))
         if src is None:
             return []
@@ -149,7 +150,7 @@ class EditProject:
         markers = [m for m in src.markers if m.get("involves_me") and m.get("type") in Segment.HIGHLIGHT_TYPES
                    and start <= m.get("video_time", -1) < end]
         out = []
-        for seg in Segment.from_markers(markers, pre, post, src.duration or None):
+        for seg in Segment.per_moment(markers, pre, post, src.duration or None, src.cuts):
             seg.start, seg.end = max(seg.start, start), min(seg.end, end)
             if seg.duration >= MIN_CLIP:
                 out.append(seg)
@@ -232,7 +233,8 @@ class EditProject:
         export_fields = ExportSettings.__dataclass_fields__
         project = cls(
             name=data.get("name") or "Untitled project",
-            sources=[SourceVideo(s["path"], float(s.get("duration", 0)), s.get("label", ""), s.get("markers", []))
+            sources=[SourceVideo(s["path"], float(s.get("duration", 0)), s.get("label", ""), s.get("markers", []),
+                                 s.get("cuts", []))
                      for s in data.get("sources", []) if s.get("path")],
             clips=[EditClip(c["source"], float(c["start"]), float(c["end"]), c.get("label", ""),
                             c.get("id") or _new_id()) for c in data.get("clips", []) if c.get("source")],

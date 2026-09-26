@@ -65,8 +65,12 @@ class HighlightCondenser:
         new_meta = copy.deepcopy(meta)
         new_meta["video"] = out.name
         new_meta["markers"] = self.remap(meta.get("markers", []), segments)
+        cuts, t = [], 0.0
+        for seg in segments[:-1]:   # where the video jumps in time: natural clip edges for the editor
+            t += seg.duration
+            cuts.append(round(t, 2))
         new_meta["game"] = {**meta.get("game", {}), "highlights_only": True, "condensed_from": video.name,
-                            "full_length_s": round(segments[-1].end, 1)}
+                            "full_length_s": round(segments[-1].end, 1), "cuts": cuts}
         Sidecar.write(out, new_meta)
         log.info("Highlights video: %d moments, %.0f s (from %s)", len(segments),
                  sum(s.duration for s in segments), video.name)

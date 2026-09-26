@@ -578,11 +578,12 @@ class EditorPage(QWidget):
         if duration <= 0:
             self.say(f"Couldn't read {path.name} - is it a video?", ok=False)
             return None
+        data = Sidecar.read(path) or {}
+        game = data.get("game") or {}
         if markers is None:
-            data = Sidecar.read(path) or {}
             markers = data.get("markers", [])
-            label = label or (data.get("game") or {}).get("title") or (data.get("game") or {}).get("champion") or ""
-        self.project.add_source(path, duration, label, markers)
+            label = label or game.get("title") or game.get("champion") or ""
+        self.project.add_source(path, duration, label, markers, game.get("cuts", []))
         self._fill_sources()
         self.changed()
         return str(path)

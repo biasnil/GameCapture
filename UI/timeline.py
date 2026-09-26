@@ -159,9 +159,15 @@ class Timeline(QWidget):
     def _paint_segments(self, p: QPainter, ry: float) -> None:
         band = QColor(Palette.ACCENT)
         band.setAlpha(30)
-        for start, end in self.segments:
+        edge = QColor(Palette.ACCENT)
+        edge.setAlpha(150)
+        for start, end in self.segments:   # one band per clip, with a visible edge where clips meet
             x1, x2 = self._x(start), self._x(end)
-            p.fillRect(QRectF(x1, 4, max(2.0, x2 - x1), ry + 2), band)
+            rect = QRectF(x1 + 1, 4, max(2.0, x2 - x1 - 2), ry + 2)
+            p.fillRect(rect, band)
+            p.setPen(QPen(edge, 1))
+            p.drawLine(rect.topLeft(), rect.bottomLeft())
+            p.drawLine(rect.topRight(), rect.bottomRight())
 
     def _paint_other_ticks(self, p: QPainter, ry: float) -> None:
         for m in self.markers:
