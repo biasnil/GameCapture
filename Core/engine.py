@@ -25,6 +25,7 @@ class Engine:
         self.pipeline: VideoPipeline | None = None
         self.watcher: LeagueMatchWatcher | None = None   # League + TFT
         self.watchers: list[GameWatcher] = []
+        self.deadlock = None   # DeadlockEnricher (per-match videos after a session)
         self._hotkeys = None
 
     def prepare(self) -> bool:
@@ -79,8 +80,19 @@ class Engine:
         cs2.listen(int(opts["gsi_port"]), opts["gsi_token"])
         watchers: list[GameWatcher] = [league, cs2]
         if processes is not None:
+            from Games.deadlock import DeadlockEnricher, DeadlockWatcher, SteamAccount
             for game in GameRegistry.SESSION_GAMES:
                 names = self.cfg.game(game.id).processes or game.processes
+                if game is GameRegistry.DEADLOCK:
+                    self.deadlock = DeadlockEnricher(self.cfg.recording.resolved_output_dir(), self.ffmpeg,
+                                                     lambda: self.cfg.game("deadlock"), self.recorder.discard)
+                    self.deadlock.start()
+                    watchers.append(DeadlockWatcher(
+                        self.cfg.auto, self.recorder, enabled=enabled, monitor=ProcessMonitor(names),
+                        enricher=self.deadlock,
+                        account=lambda: self.cfg.game("deadlock").options.get("account_id")
+                        or SteamAccount.active_account_id()))
+                    continue
                 watchers.append(ProcessSessionWatcher(game, self.cfg.auto, self.recorder, enabled=enabled,
                                                       monitor=ProcessMonitor(names)))
         self.watcher = league
@@ -143,6 +155,7 @@ class Engine:
             "elapsed": rec.elapsed() if rec else 0.0,
             "bookmarks": len(getattr(rec, "_bookmarks", [])) if rec else 0,
             "error": getattr(rec, "last_error", None) if rec else None,
+            "audio_warning": getattr(rec, "audio_warning", None) if rec and rec.is_recording else None,
             "in_match": live is not None,
             "champion": live["title"] if live else None,
             "mode": s.mode if s else None,
@@ -160,6 +173,7 @@ class Engine:
         if self.watcher is not None and self.watcher not in self.watchers:
             steps.append(("match watcher", self.watcher.shutdown))
         steps.append(("recorder", self._stop_recorder))
+        steps.append(("Deadlock lookups", lambda: self.deadlock and self.deadlock.stop()))
         for name, step in steps:
             try:
                 step()

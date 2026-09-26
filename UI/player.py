@@ -76,6 +76,8 @@ class PlayerPanel(QWidget):
     def load(self, path: Path | None, markers: list[dict]) -> None:
         self.player.stop()
         self.player.setSource(QUrl.fromLocalFile(str(path)) if path else QUrl())
+        if path and hasattr(self.player, "setActiveAudioTrack"):
+            self.player.setActiveAudioTrack(0)  # track 1 = the mix (files with separate tracks)
         self.timeline.set_markers(markers)
         self.timeline.set_segments([])
         self.timeline.set_position(0)

@@ -350,7 +350,9 @@ class MainWindow(QMainWindow):
         if st["finalizing"]:
             self._set_state("match", "Saving recording...")
         elif st["recording"]:
-            self._set_state("recording", f"REC {Format.duration(st['elapsed'])}" + (f"   ·   {match}" if match else ""))
+            warn = f"   ·   ⚠ {st['audio_warning']} (Settings > Capture > Test audio)" if st["audio_warning"] else ""
+            self._set_state("recording", f"REC {Format.duration(st['elapsed'])}" + (f"   ·   {match}" if match else "")
+                            + warn)
         elif st["in_match"]:
             self._set_state("match", f"In match, not recording   ·   {match}")
         elif st["error"]:
@@ -374,6 +376,8 @@ class MainWindow(QMainWindow):
         if st["recording"] and not self._was_capturing and self.cfg.gui.notify_start:
             what = ("League session - until you close League" if st["session_matches"] is not None
                     else f"{st['champion']}" if st["in_match"] else "Manual recording")
+            if st["audio_warning"]:
+                what += f"\n⚠ {st['audio_warning']}"
             self._notify("Recording started", what)
         self._was_capturing = st["recording"]
 

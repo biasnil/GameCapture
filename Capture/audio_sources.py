@@ -78,12 +78,26 @@ class StereoConverter:
         self._pos = 0.0
         self._prev: np.ndarray | None = None
 
+    # Windows surround order: FL FR FC LFE BL BR SL SR. Weights for folding into left / right.
+    _LEFT = (1.0, 0.0, 0.707, 0.0, 0.707, 0.0, 0.707, 0.0)
+    _RIGHT = (0.0, 1.0, 0.707, 0.0, 0.0, 0.707, 0.0, 0.707)
+
+    @classmethod
+    def downmix(cls, x: np.ndarray) -> np.ndarray:
+        """Surround (5.1 / 7.1 headsets like the HyperX Cloud III) -> stereo, keeping every channel
+        audible (centre = voices, rears = footsteps) and never louder than the input."""
+        n = x.shape[1]
+        wl = np.array((cls._LEFT + (0.0,) * n)[:n], np.float32)
+        wr = np.array((cls._RIGHT + (0.0,) * n)[:n], np.float32)
+        out = np.stack([x @ wl / max(wl.sum(), 1.0), x @ wr / max(wr.sum(), 1.0)], axis=1)
+        return out.astype(np.float32, copy=False)
+
     def convert(self, samples: np.ndarray) -> np.ndarray:
         x = samples.reshape(-1, self.channels).astype(np.float32, copy=False)
         if self.channels == 1:
             x = np.repeat(x, 2, axis=1)
         elif self.channels > 2:
-            x = x[:, :2]
+            x = self.downmix(x)
         if self.rate == RATE:
             return x
         data = x if self._prev is None else np.vstack([self._prev, x])
@@ -125,6 +139,8 @@ class AudioSource:
         self.label = label
         self.volume = volume
         self.buffer = FrameBuffer()
+        self.frames_in = 0      # how much audio the device has delivered (for the audio test)
+        self.peak = 0.0         # loudest sample seen (for the audio test)
 
     def start(self) -> None:
         """Open the device. Raise if it can't be used at all."""
@@ -137,6 +153,8 @@ class AudioSource:
 
     def pull(self, n: int) -> np.ndarray:
         frames = self.buffer.pull(n)
+        if frames.size:
+            self.peak = max(self.peak, float(np.abs(frames).max()))
         return frames * self.volume if self.volume != 1.0 else frames
 
 
@@ -151,20 +169,33 @@ class _PyAudioSource(AudioSource):
         self._pa = pyaudio.PyAudio()
         try:
             dev = self._find_device(pa=self._pa)
-            channels = max(1, min(2, int(dev["maxInputChannels"])))
             rate = int(dev["defaultSampleRate"])
-            self._conv = StereoConverter(rate, channels)
-
-            def on_audio(in_data, frame_count, time_info, status):
-                self.buffer.push(self._conv.convert(np.frombuffer(in_data, np.float32)))
-                return None, pyaudio.paContinue
-            self._stream = self._pa.open(format=pyaudio.paFloat32, channels=channels, rate=rate, input=True,
-                                         input_device_index=dev["index"], frames_per_buffer=rate // 100,
-                                         stream_callback=on_audio)
-            log.info("Audio source %s: %s (%d Hz, %d ch)", self.label, dev["name"], rate, channels)
+            native = max(1, int(dev["maxInputChannels"]))
+            # Windows only opens a device (loopback especially) in its own channel layout - a 7.1
+            # headset needs all 8 channels - so try that first and downmix ourselves.
+            errors = []
+            for channels in dict.fromkeys((native, 2, 1)):
+                try:
+                    self._open(pyaudio, dev, rate, channels)
+                    log.info("Audio source %s: %s (%d Hz, %d ch)", self.label, dev["name"], rate, channels)
+                    return
+                except Exception as exc:
+                    errors.append(f"{channels} ch: {exc}")
+            raise RuntimeError(f"{dev['name']} wouldn't open ({'; '.join(errors)})")
         except Exception:
             self._pa.terminate()
             raise
+
+    def _open(self, pyaudio, dev: dict, rate: int, channels: int) -> None:
+        conv = StereoConverter(rate, channels)
+
+        def on_audio(in_data, frame_count, time_info, status):
+            self.buffer.push(conv.convert(np.frombuffer(in_data, np.float32)))
+            self.frames_in += frame_count
+            return None, pyaudio.paContinue
+        self._stream = self._pa.open(format=pyaudio.paFloat32, channels=channels, rate=rate, input=True,
+                                     input_device_index=dev["index"], frames_per_buffer=rate // 100,
+                                     stream_callback=on_audio)
 
     def stop(self) -> None:
         try:
@@ -263,6 +294,8 @@ class AppAudioSource(AudioSource):
         out = np.zeros((n, CHANNELS), np.float32)
         for b in bufs:
             out += b.pull(n)
+        if out.size:
+            self.peak = max(self.peak, float(np.abs(out).max()))
         return out * self.volume if self.volume != 1.0 else out
 
     def stop(self) -> None:

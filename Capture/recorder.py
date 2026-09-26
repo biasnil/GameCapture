@@ -106,17 +106,21 @@ class Recorder:
                 log.info("Already recording")
                 return False
             want_audio = self.cfg.capture.audio
+            self.audio_warning = None
             result = self._launch(prefix, use_audio=want_audio)
             if want_audio and result != "ok":
                 # Sound is the part most likely to break (devices, ffmpeg versions). A recording
                 # without sound beats no recording; if the video side is broken this fails fast too.
                 log.warning("Retrying WITHOUT sound - see the Log for why sound failed")
                 result = self._launch(prefix, use_audio=False)
+                if result == "ok":
+                    self.audio_warning = "recording without sound"
             if result == "ok":
                 self.last_error = None
             return result == "ok"
 
-    last_error: str | None = None  # why the last start failed (shown in the app)
+    last_error: str | None = None     # why the last start failed (shown in the app)
+    audio_warning: str | None = None  # this recording is missing some sound (shown in the app)
 
     def _launch(self, prefix: str | None, use_audio: bool) -> str:
         """One attempt. Returns "ok", "audio" (only the sound failed - worth retrying without it)
@@ -263,7 +267,17 @@ class Recorder:
             log.warning("No audio (%s) - recording video only", exc)
             return None
 
-    def _open_mixer(self):
+    def audio_test_mixer(self):
+        """The mixer the current settings would use, unopened (Settings > Test audio)."""
+        from Capture.audio_mixer import AudioMixer
+        from Capture.audio_sources import MicrophoneSource, SystemAudioSource
+        cap = self.cfg.capture
+        if cap.audio_mode == "system" and not cap.mic:
+            return AudioMixer([SystemAudioSource(cap.system_volume / 100)])
+        mixer = self._open_mixer(open_now=False)
+        return mixer
+
+    def _open_mixer(self, open_now: bool = True):
         from Capture.audio_mixer import AudioMixer
         from Capture.audio_sources import AppAudioSource, MicrophoneSource, SystemAudioSource
         cap = self.cfg.capture
@@ -286,7 +300,11 @@ class Recorder:
         if not sources:
             raise RuntimeError("no audio sources selected")
         mixer = AudioMixer(sources, separate_tracks=cap.audio_tracks)
+        if not open_now:
+            return mixer
         mixer.open_sources()
+        if mixer.failed:
+            self.audio_warning = "no " + " / ".join(mixer.failed).lower() + " sound"
         log.info("Audio: %s%s", mixer.name, f" (tracks: {', '.join(mixer.track_names)})"
                  if mixer.separate_tracks else "")
         return mixer

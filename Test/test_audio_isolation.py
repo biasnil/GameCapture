@@ -191,3 +191,102 @@ class MultiTrackRecordingTests(TempDirTest):
         self.assertEqual(info.count("Audio:"), 3, info)
         for name in ("Mix", "Game", "Microphone"):
             self.assertRegex(info, rf"(title|handler_name)\s+: {name}\n")
+
+
+class FakePyAudio:
+    """Stands in for PyAudioWPatch. Like Windows, a device opens ONLY in the layouts it allows."""
+    paFloat32, paContinue, paWASAPI = 1, 0, 13
+    allowed = {8}
+    device = {"index": 3, "name": "Speakers (HyperX Cloud III)", "maxInputChannels": 8,
+              "defaultSampleRate": 48000.0, "isLoopbackDevice": True}
+    opened = []
+
+    class PyAudio:
+        def get_host_api_info_by_type(self, t):
+            return {"defaultOutputDevice": 3}
+
+        def get_device_info_by_index(self, i):
+            return FakePyAudio.device
+
+        def get_default_input_device_info(self):
+            return FakePyAudio.device
+
+        def open(self, channels, stream_callback=None, **kw):
+            if channels not in FakePyAudio.allowed:
+                raise OSError(-9998, "Invalid number of channels")
+            FakePyAudio.opened.append(channels)
+            data = np.zeros((480, channels), np.float32)
+            data[:, 2 if channels > 2 else 0] = 0.5       # centre channel (voices) on surround
+            stream_callback(data.tobytes(), 480, None, 0)
+            return types.SimpleNamespace(stop_stream=lambda: None, close=lambda: None)
+
+        def terminate(self):
+            pass
+
+
+class SurroundHeadsetTests(unittest.TestCase):
+    """Bug: with 'everything on', game sound was missing - the loopback was forced to 2 channels,
+    which Windows refuses for a 7.1 headset."""
+
+    def setUp(self):
+        FakePyAudio.opened = []
+        self.mod = patch.dict(sys.modules, {"pyaudiowpatch": FakePyAudio})
+        self.mod.start()
+
+    def tearDown(self):
+        self.mod.stop()
+        FakePyAudio.allowed = {8}
+
+    def test_71_loopback_opens_in_its_own_layout_and_is_downmixed(self):
+        src = SystemAudioSource()
+        src.start()
+        self.assertEqual(FakePyAudio.opened, [8])
+        frames = src.pull(480)
+        self.assertGreater(frames[0, 0], 0.1, "centre channel (voices) reaches the left ear")
+        self.assertAlmostEqual(float(frames[0, 0]), float(frames[0, 1]), places=5)
+
+    def test_falls_back_to_stereo_when_native_is_refused(self):
+        FakePyAudio.allowed = {2}
+        src = MicrophoneSource()
+        src.start()
+        self.assertEqual(FakePyAudio.opened, [2])
+        self.assertGreater(float(src.pull(480)[0, 0]), 0.1)
+
+    def test_reports_every_attempt_when_nothing_works(self):
+        FakePyAudio.allowed = set()
+        with self.assertRaises(RuntimeError) as ctx:
+            SystemAudioSource().start()
+        self.assertIn("8 ch", str(ctx.exception))
+
+    def test_downmix_never_clips(self):
+        full = np.ones((10, 8), np.float32)
+        self.assertLessEqual(float(StereoConverter.downmix(full).max()), 1.0001)
+
+
+class AudioTestAndWarningTests(TempDirTest):
+    def test_self_test_reports_each_source(self):
+        class Broken(AudioSource):
+            def start(self):
+                raise RuntimeError("Invalid number of channels")
+
+        class Quiet(ToneSource):
+            pass
+        loud, quiet = ToneSource("Game", 0.25), Quiet("Discord", 0.0)
+        report = dict(AudioMixer([loud, quiet, Broken("Microphone")]).self_test(seconds=0.1))
+        self.assertTrue(report["Game"].startswith("OK"))
+        self.assertTrue(report["Discord"].startswith("silent"))
+        self.assertIn("Invalid number of channels", report["Microphone"])
+
+    def test_recording_warns_when_a_source_is_missing(self):
+        cfg = AppConfig()
+        cfg.recording.output_dir = str(self.tmp)
+        cfg.log_dir = str(self.tmp / "logs")
+        cfg.capture.mic = True
+        rec = Recorder(cfg, None, "x264", pipeline=object())
+
+        def broken(self):
+            raise RuntimeError("no device")
+        with patch.object(SystemAudioSource, "start", broken), patch.object(MicrophoneSource, "start", lambda s: None):
+            mixer = rec._open_audio()
+        self.assertEqual([s.label for s in mixer.sources], ["Microphone"])
+        self.assertEqual(rec.audio_warning, "no everything sound")

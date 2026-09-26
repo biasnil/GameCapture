@@ -27,6 +27,7 @@ class AudioMixer:
         self._socks: list[socket.socket] = []
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.failed: dict[str, str] = {}   # source label -> why it couldn't open
 
     @property
     def track_names(self) -> list[str]:
@@ -45,6 +46,7 @@ class AudioMixer:
                 working.append(src)
             except Exception as exc:
                 log.warning("Audio source %s unavailable: %s", src.label, exc)
+                self.failed[src.label] = str(exc) or type(exc).__name__
         if not working:
             raise RuntimeError("no audio source could be opened")
         self.sources = working
@@ -126,3 +128,32 @@ class AudioMixer:
                     sock.close()
             except OSError:
                 pass
+
+    def self_test(self, seconds: float = 3.0) -> list[tuple[str, str]]:
+        """Open every source for a few seconds and report what each one delivered.
+        -> [(label, "OK, loudest -18 dB" / "silent - nothing playing?" / "failed: reason")]"""
+        try:
+            self.open_sources()
+        except RuntimeError:
+            pass
+        peaks = {id(s): 0.0 for s in self.sources}
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            for s in self.sources:
+                s.maintain()
+                frames = s.pull(RATE // 50)
+                if frames.size:
+                    peaks[id(s)] = max(peaks[id(s)], float(np.abs(frames).max()))
+            time.sleep(0.02)
+        report = [(label, f"failed: {why}") for label, why in self.failed.items()]
+        for s in self.sources:
+            peak = peaks[id(s)]
+            if peak > 1e-4:
+                report.append((s.label, f"OK, loudest {20 * np.log10(peak):.0f} dB"))
+            else:
+                report.append((s.label, "silent - is something playing / are you talking?"))
+            try:
+                s.stop()
+            except Exception:
+                pass
+        return report
