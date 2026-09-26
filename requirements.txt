@@ -1,0 +1,6 @@
+pynput>=1.7.7
+PyAudioWPatch>=0.2.12.8
+PyQt6>=6.7
+psutil>=6.0
+numpy>=1.26
+proc-tap>=1.1

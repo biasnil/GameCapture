@@ -1,0 +1,123 @@
+{
+  "capture": {
+    "monitor": 0,
+    "fps": 60,
+    "resolution": "1080p",
+    "rate_control": "quality",
+    "quality": 21,
+    "bitrate_kbps": 12000,
+    "draw_mouse": true,
+    "encoder": "auto",
+    "audio": true,
+    "audio_mode": "isolated",
+    "system_volume": 100,
+    "game_audio": true,
+    "game_volume": 100,
+    "mic": false,
+    "mic_volume": 100,
+    "apps": [
+      {
+        "exe": "discord.exe",
+        "volume": 100,
+        "enabled": true
+      }
+    ],
+    "audio_tracks": false
+  },
+  "recording": {
+    "output_dir": "~/Videos/GameCapture",
+    "filename_prefix": "LoL",
+    "final_format": "mp4",
+    "keep_mkv": false
+  },
+  "hotkeys": {
+    "toggle": "<ctrl>+<alt>+r",
+    "bookmark": "<ctrl>+<alt>+b",
+    "quit": "<ctrl>+<alt>+q"
+  },
+  "auto": {
+    "enabled": true,
+    "poll_interval": 1.0,
+    "end_grace_seconds": 15.0,
+    "post_roll_seconds": 5.0,
+    "skip_modes": [
+      "PRACTICETOOL"
+    ],
+    "chapters": true,
+    "rename_with_result": true
+  },
+  "clips": {
+    "pre_seconds": 10.0,
+    "post_seconds": 5.0,
+    "folder": "Clips",
+    "discord_limit_mb": 20
+  },
+  "storage": {
+    "limit_enabled": false,
+    "limit_gb": 100.0,
+    "keep_favorites": true
+  },
+  "gui": {
+    "minimize_to_tray": true,
+    "start_minimized": false,
+    "notify_start": true,
+    "notify_saved": true
+  },
+  "games": {
+    "league": {
+      "enabled": true,
+      "mode": "highlights",
+      "processes": [],
+      "options": {}
+    },
+    "tft": {
+      "enabled": false,
+      "mode": "match",
+      "processes": [],
+      "options": {}
+    },
+    "cs2": {
+      "enabled": true,
+      "mode": "match",
+      "processes": [],
+      "options": {
+        "gsi_port": 3021,
+        "gsi_token": "caec13296649f79319308875c9a7312c"
+      }
+    },
+    "apex": {
+      "enabled": true,
+      "mode": "match",
+      "processes": [],
+      "options": {}
+    },
+    "deadlock": {
+      "enabled": true,
+      "mode": "match",
+      "processes": [],
+      "options": {}
+    },
+    "marvel_rivals": {
+      "enabled": true,
+      "mode": "match",
+      "processes": [],
+      "options": {}
+    },
+    "repo": {
+      "enabled": true,
+      "mode": "match",
+      "processes": [],
+      "options": {}
+    },
+    "valorant": {
+      "enabled": true,
+      "mode": "match",
+      "processes": [],
+      "options": {}
+    }
+  },
+  "ffmpeg_path": "",
+  "log_dir": "Logs",
+  "log_level": "INFO",
+  "stop_on_exit": true
+}
