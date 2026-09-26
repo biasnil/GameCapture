@@ -38,6 +38,7 @@ class SettingsPage(QWidget):
         self.sections: dict[str, SettingsSection] = {}
         for cls in self.GENERAL:
             self._add_section(cls(self))
+        GameRegistry.load_custom(self.cfg.games)
         for game in GameRegistry.supported():
             self._add_section(GameDetailSection(self, game))
         self._build_nav()
@@ -113,6 +114,24 @@ class SettingsPage(QWidget):
     def refresh_my_games(self) -> None:
         self._build_nav()
 
+    def games_changed(self, select: str | None = None) -> None:
+        """A game was added, renamed or removed: rebuild its pages, the tiles, the nav and the watchers."""
+        GameRegistry.load_custom(self.cfg.games)
+        for key in [k for k, sec in self.sections.items()
+                    if isinstance(sec, GameDetailSection) and sec.game.custom]:
+            section = self.sections.pop(key)
+            self.stack.removeWidget(section)
+            section.deleteLater()
+        for game in GameRegistry.custom():
+            self._add_section(GameDetailSection(self, game))
+        games = self.sections.get("games")
+        if isinstance(games, GamesSection):
+            games.rebuild()
+        self._build_nav()
+        self.win.engine.sync_game_watchers()
+        if select:
+            self.select(select if select in self.sections else f"game:{select}")
+
     def select(self, key: str, quiet: bool = False) -> None:
         section = self.sections.get(key)
         if section is None:
@@ -154,7 +173,7 @@ class SettingsPage(QWidget):
         try:
             self.cfg.save()
         except OSError as exc:
-            self.restart_banner.show_message("warning", f"Could not save config.json: {exc}")
+            self.restart_banner.show_message("warning", f"Could not save your settings: {exc}")
 
     def on_video_plan(self) -> None:
         capture = self.sections.get("capture")

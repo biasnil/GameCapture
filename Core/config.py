@@ -1,4 +1,4 @@
-"""config.json <-> typed settings objects."""
+"""config.json <-> typed settings objects. The file lives in the app data folder (see Core/paths.py)."""
 from __future__ import annotations
 
 import json
@@ -39,7 +39,7 @@ class CaptureSettings:
 @dataclass
 class RecordingSettings:
     output_dir: str = "~/Videos/GameCapture"
-    filename_prefix: str = "LoL"
+    filename_prefix: str = "Recording"   # manual recordings; auto-recordings use the game's prefix
     final_format: str = "mp4"   # mp4 (remuxed after stop) or mkv
     keep_mkv: bool = False      # keep the crash-safe .mkv after remuxing
 
@@ -49,13 +49,13 @@ class RecordingSettings:
 
 @dataclass
 class AutoSettings:
-    enabled: bool = True             # auto-record matches
+    enabled: bool = True             # auto-record games
     poll_interval: float = 1.0       # seconds between checks of the game API
     end_grace_seconds: float = 15.0  # API silent this long (no GameEnd) = match over
     post_roll_seconds: float = 5.0   # keep recording this long after GameEnd
     skip_modes: list[str] = field(default_factory=lambda: ["PRACTICETOOL"])
     chapters: bool = True            # embed highlight chapters in the video file
-    rename_with_result: bool = True  # LoL_<time>_Ahri_Win_7-2-5.mp4
+    rename_with_result: bool = True  # <Game>_<time>_<Character>_Win_7-2-5.mp4 (games that report a result)
 
 
 @dataclass
@@ -93,6 +93,8 @@ class GameSettings:
     mode: str = "match"              # session (game open -> closed) | match | highlights (keep only highlights)
     processes: list[str] = field(default_factory=list)  # override the game's executable names (if they change)
     options: dict = field(default_factory=dict)          # game-specific extras (e.g. CS2 integration port/token)
+    name: str = ""                   # games you added yourself: display name (empty for built-in games)
+    custom: bool = False             # True = added in Settings > Games > Add a game
 
     MODES = ("session", "match", "highlights")
 
@@ -113,10 +115,9 @@ class AppConfig:
     clips: ClipSettings = field(default_factory=ClipSettings)
     storage: StorageSettings = field(default_factory=StorageSettings)
     gui: GuiSettings = field(default_factory=GuiSettings)
-    games: dict[str, GameSettings] = field(default_factory=lambda: {"league": GameSettings(), "tft": GameSettings(),
-                                                                    "cs2": GameSettings()})
+    games: dict[str, GameSettings] = field(default_factory=dict)  # filled in as games are seen
     ffmpeg_path: str = ""            # blank = Bin/ffmpeg.exe, then PATH
-    log_dir: str = "Logs"
+    log_dir: str = "Logs"            # relative = inside the app data folder
     log_level: str = "INFO"
     stop_on_exit: bool = True
 
@@ -124,7 +125,10 @@ class AppConfig:
                 "auto": AutoSettings, "clips": ClipSettings, "storage": StorageSettings, "gui": GuiSettings}
 
     @classmethod
-    def load(cls, path: Path = Paths.CONFIG) -> "AppConfig":
+    def load(cls, path: Path | None = None) -> "AppConfig":
+        if path is None:
+            path = Paths.CONFIG
+            Paths.migrate_legacy_config(path)  # settings used to live next to the code
         if not path.exists():
             cfg = cls()
             cfg.save(path)
@@ -140,11 +144,23 @@ class AppConfig:
         return cfg
 
     def game(self, game_id: str) -> GameSettings:
-        """Per-game settings (created with defaults the first time a game is seen)."""
-        return self.games.setdefault(game_id, GameSettings())
+        """Per-game settings (created with the game's defaults the first time it is seen)."""
+        gs = self.games.get(game_id)
+        if gs is None:
+            from Games.registry import GameRegistry
+            info = GameRegistry.get(game_id)
+            gs = self.games[game_id] = GameSettings(enabled=info.default_on if info else True)
+        return gs
 
-    def save(self, path: Path = Paths.CONFIG) -> None:
-        path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+    def custom_games(self) -> dict[str, GameSettings]:
+        return {gid: gs for gid, gs in self.games.items() if gs.custom}
+
+    def save(self, path: Path | None = None) -> None:
+        path = path or Paths.CONFIG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        tmp.replace(path)  # never leave a half-written config behind
 
     def resolved_log_dir(self) -> Path:
         return Paths.ensure_dir(self.log_dir)

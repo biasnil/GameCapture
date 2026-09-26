@@ -12,6 +12,7 @@ from Core.config import AppConfig
 from Core.sidecar import Sidecar
 from Games.base import GameWatcher
 from Games.league_watcher import LeagueMatchWatcher
+from Games.registry import GameRegistry
 
 log = logging.getLogger("gamecapture")
 
@@ -60,9 +61,6 @@ class Engine:
 
     def build_watchers(self) -> list[GameWatcher]:
         from Games.cs2 import CS2Installer, CS2Watcher
-        from Games.processes import ProcessMonitor
-        from Games.registry import GameRegistry
-        from Games.session_watcher import ProcessSessionWatcher
         enabled = self.auto_enabled
         try:
             from Games.processes import LeagueProcesses
@@ -76,27 +74,67 @@ class Engine:
         cs2 = CS2Watcher(self.cfg.auto, self.recorder, enabled=enabled)
         opts = self.cfg.game("cs2").options
         opts.setdefault("gsi_port", 3021)
-        opts.setdefault("gsi_token", CS2Installer.new_token())
+        opts.setdefault("gsi_token", CS2Installer.installed_token() or CS2Installer.new_token())
         cs2.listen(int(opts["gsi_port"]), opts["gsi_token"])
-        watchers: list[GameWatcher] = [league, cs2]
-        if processes is not None:
-            from Games.deadlock import DeadlockEnricher, DeadlockWatcher, SteamAccount
-            for game in GameRegistry.SESSION_GAMES:
-                names = self.cfg.game(game.id).processes or game.processes
-                if game is GameRegistry.DEADLOCK:
-                    self.deadlock = DeadlockEnricher(self.cfg.recording.resolved_output_dir(), self.ffmpeg,
-                                                     lambda: self.cfg.game("deadlock"), self.recorder.discard)
-                    self.deadlock.start()
-                    watchers.append(DeadlockWatcher(
-                        self.cfg.auto, self.recorder, enabled=enabled, monitor=ProcessMonitor(names),
-                        enricher=self.deadlock,
-                        account=lambda: self.cfg.game("deadlock").options.get("account_id")
-                        or SteamAccount.active_account_id()))
-                    continue
-                watchers.append(ProcessSessionWatcher(game, self.cfg.auto, self.recorder, enabled=enabled,
-                                                      monitor=ProcessMonitor(names)))
         self.watcher = league
+        watchers: list[GameWatcher] = [league, cs2]
+        self._psutil = processes is not None
+        if self._psutil:
+            watchers += self._session_watchers()
         return watchers
+
+    def _session_watcher(self, game) -> GameWatcher:
+        from Games.processes import ProcessMonitor
+        from Games.registry import GameRegistry
+        from Games.session_watcher import ProcessSessionWatcher
+        names = self.cfg.game(game.id).processes or game.processes
+        if game.id == GameRegistry.DEADLOCK.id:
+            from Games.deadlock import DeadlockEnricher, DeadlockWatcher, SteamAccount
+            if self.deadlock is None:
+                self.deadlock = DeadlockEnricher(self.cfg.recording.resolved_output_dir(), self.ffmpeg,
+                                                 lambda: self.cfg.game("deadlock"), self.recorder.discard)
+                self.deadlock.start()
+            return DeadlockWatcher(self.cfg.auto, self.recorder, enabled=self.auto_enabled,
+                                   monitor=ProcessMonitor(names), enricher=self.deadlock,
+                                   account=lambda: self.cfg.game("deadlock").options.get("account_id")
+                                   or SteamAccount.active_account_id())
+        return ProcessSessionWatcher(game, self.cfg.auto, self.recorder, enabled=self.auto_enabled,
+                                     monitor=ProcessMonitor(names))
+
+    def _session_watchers(self) -> list[GameWatcher]:
+        """One process watcher per game without a match API - built-in or added by you."""
+        from Games.registry import GameRegistry
+        GameRegistry.load_custom(self.cfg.games)
+        return [self._session_watcher(g) for g in GameRegistry.session_games()]
+
+    def sync_game_watchers(self) -> None:
+        """Settings changed the game list (a game added / removed, an .exe renamed): update the
+        watchers now, without a restart. A game that is being recorded keeps its watcher until it closes."""
+        from Games.registry import GameRegistry
+        from Games.session_watcher import ProcessSessionWatcher
+        if self.recorder is None or not getattr(self, "_psutil", False):
+            return
+        GameRegistry.load_custom(self.cfg.games)
+        wanted = {g.id: g for g in GameRegistry.session_games()}
+        keep: list[GameWatcher] = []
+        for w in self.watchers:
+            if not isinstance(w, ProcessSessionWatcher):
+                keep.append(w)
+                continue
+            game = wanted.get(w.GAME.id)
+            names = {n.lower() for n in (self.cfg.game(game.id).processes or game.processes)} if game else set()
+            if w.session is not None or (game is not None and names == w.monitor.names):
+                keep.append(w)
+                wanted.pop(w.GAME.id, None)
+                continue
+            w.shutdown()  # removed, or its .exe changed (it's rebuilt below)
+        for game in wanted.values():
+            if not any(w.GAME.id == game.id for w in keep):
+                watcher = self._session_watcher(game)
+                watcher.start()
+                keep.append(watcher)
+                log.info("Now watching for %s (%s)", game.name, ", ".join(watcher.monitor.names))
+        self.watchers = keep
 
     def bookmark(self) -> float | None:
         """Bookmark hotkey: mark this moment as a highlight in whatever is recording."""
@@ -146,10 +184,9 @@ class Engine:
     def status(self) -> dict:
         rec = self.recorder
         live = next((st for st in (w.live_status() for w in self.watchers) if st), None)
-        s = self.watcher.session if self.watcher else None
         return {
             "ready": rec is not None,
-            "auto": self.cfg.auto.enabled and any(self.cfg.game(g).enabled for g in self.cfg.games),
+            "auto": self.cfg.auto.enabled and any(self.cfg.game(g.id).enabled for g in GameRegistry.supported()),
             "recording": bool(rec and rec.is_recording),
             "finalizing": bool(rec and rec.is_finalizing),
             "elapsed": rec.elapsed() if rec else 0.0,
@@ -158,7 +195,6 @@ class Engine:
             "audio_warning": getattr(rec, "audio_warning", None) if rec and rec.is_recording else None,
             "in_match": live is not None,
             "champion": live["title"] if live else None,
-            "mode": s.mode if s else None,
             "kda": live["kda"] if live else None,
             "highlights": live["highlights"] if live else 0,
             "mode": self.cfg.game("league").mode,

@@ -112,7 +112,7 @@ class CardStrip(QScrollArea):
         self._row.setSpacing(8)
         self._row.addStretch()
         self.setWidget(inner)
-        self._empty = QLabel("No recordings yet - play a match and it will show up here.", inner)
+        self._empty = QLabel("No recordings yet - play a game and it will show up here.", inner)
         self._empty.setObjectName("Muted")
         thumbs.ready.connect(self._on_thumb)
 

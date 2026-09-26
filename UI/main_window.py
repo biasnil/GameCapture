@@ -21,6 +21,7 @@ from Core.library import RecordingEntry, RecordingLibrary
 from Core.storage import StorageManager
 from Theme.palette import Palette
 from UI.clips_page import ClipsPage
+from UI.editor_page import EditorPage
 from UI.favorites_page import FavoritesPage
 from UI.icons import Icons
 from UI.log_page import LogPage
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
         self.sessions = SessionsPage(self)
         self.favorites = FavoritesPage()
         self.clips = ClipsPage(self)
+        self.editor = EditorPage(self)
         self.settings = SettingsPage(self)
         self.log_page = LogPage()
 
@@ -116,7 +118,8 @@ class MainWindow(QMainWindow):
         self.nav.setExclusive(True)
         self._nav_buttons: dict[QWidget, NavButton] = {}
         pages = (("nav_sessions", "Sessions", self.sessions), ("nav_favorites", "Favorites", self.favorites),
-                 ("nav_clips", "Clips", self.clips), ("nav_log", "Log", self.log_page),
+                 ("nav_clips", "Clips", self.clips), ("nav_editor", "Video editor", self.editor),
+                 ("nav_log", "Log", self.log_page),
                  ("nav_settings", "Settings", self.settings))
         for icon, tip, page in pages:
             if page is self.log_page:
@@ -206,11 +209,28 @@ class MainWindow(QMainWindow):
         self.fs_watcher = QFileSystemWatcher([str(self.output_dir)], self)
         self.fs_watcher.directoryChanged.connect(lambda _: self.refresh_timer.start(1500))
 
+        self.thumbs.ready.connect(self.editor.on_thumbnail)
         p = self.sessions.player
-        for key, fn in (("Space", p.toggle_play), ("Left", lambda: p.skip(-5)), ("Right", lambda: p.skip(5)),
-                        ("N", lambda: p.jump_highlight(+1)), ("P", lambda: p.jump_highlight(-1))):
+        session_keys = {"Space": p.toggle_play, "Left": lambda: p.skip(-5), "Right": lambda: p.skip(5),
+                        "N": lambda: p.jump_highlight(+1), "P": lambda: p.jump_highlight(-1)}
+        for key in (*session_keys, "S", "Delete", "Ctrl+D"):
             shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.activated.connect(lambda fn=fn: fn() if self.stack.currentWidget() is self.sessions else None)
+            shortcut.activated.connect(lambda k=key: self._shortcut(k, session_keys))
+
+    def _shortcut(self, key: str, session_keys: dict) -> None:
+        page = self.stack.currentWidget()
+        if page is self.sessions and key in session_keys:
+            session_keys[key]()
+        elif page is self.editor:
+            self.editor.shortcut(key)
+
+    def open_in_editor(self, entry: RecordingEntry, segments) -> None:
+        """Sessions > Edit: send the ticked highlights to the video editor."""
+        self.sessions.player.player.pause()
+        added = self.editor.add_segments(entry, segments)
+        self.show_page(self.editor)
+        if added:
+            self.editor.say(f"Added {added} clip{'s' if added != 1 else ''} from {entry.title}")
 
     def show_page(self, page: QWidget) -> None:
         if self.stack.currentWidget() is self.settings and page is not self.settings:
@@ -244,7 +264,7 @@ class MainWindow(QMainWindow):
             if newest is not None and (datetime.now() - newest.when).total_seconds() < 180:
                 self._notify_saved(newest)
             elif self.cfg.game("league").mode == "highlights":
-                self._notify("Match over", "No highlights this time - nothing was kept")
+                self._notify("Game over", "No highlights this time - nothing was kept")
         if self.stack.currentWidget() is self.favorites:
             self.favorites.refresh(entries)
 
@@ -311,6 +331,7 @@ class MainWindow(QMainWindow):
             return
         if self.sessions.current is entry:
             self.sessions.clear()
+        self.editor.release_file(entry.video)
         for path in (entry.video, entry.video.with_suffix(".json")):
             if path.exists():
                 result = QFile.moveToTrash(str(path))
@@ -345,7 +366,7 @@ class MainWindow(QMainWindow):
         self.rec_btn.setEnabled(True)
         match = f"{st['champion']} · {st['kda']} · {st['highlights']} highlights" if st["in_match"] else ""
         if st["session_matches"] is not None:
-            played = f"League session · {st['session_matches']} match{'es' if st['session_matches'] != 1 else ''} done"
+            played = f"Session · {st['session_matches']} match{'es' if st['session_matches'] != 1 else ''} done"
             match = f"{played}   ·   {match}" if match else played
         if st["finalizing"]:
             self._set_state("match", "Saving recording...")
@@ -354,11 +375,11 @@ class MainWindow(QMainWindow):
             self._set_state("recording", f"REC {Format.duration(st['elapsed'])}" + (f"   ·   {match}" if match else "")
                             + warn)
         elif st["in_match"]:
-            self._set_state("match", f"In match, not recording   ·   {match}")
+            self._set_state("match", f"In game, not recording   ·   {match}")
         elif st["error"]:
             self._set_state("match", f"Recording failed to start - see Log  ({st['error'][:90]})")
         else:
-            self._set_state("ready", "Ready · waiting for a match" if st["auto"]
+            self._set_state("ready", "Ready · waiting for a game" if st["auto"]
                             else f"Ready · auto-record off ({Format.hotkey(self.cfg.hotkeys.toggle)} to record)")
         self.rec_btn.setText("Stop" if st["recording"] else "Record")
         self.bookmark_btn.setEnabled(st["recording"])
@@ -374,7 +395,7 @@ class MainWindow(QMainWindow):
             self.refresh_timer.start(500)  # the finished file (and its highlights) just landed
         self._was_recording = busy
         if st["recording"] and not self._was_capturing and self.cfg.gui.notify_start:
-            what = ("League session - until you close League" if st["session_matches"] is not None
+            what = ("Session - until you close the game" if st["session_matches"] is not None
                     else f"{st['champion']}" if st["in_match"] else "Manual recording")
             if st["audio_warning"]:
                 what += f"\n⚠ {st['audio_warning']}"
@@ -461,8 +482,10 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             self.sessions.player.player.pause()
+            self.editor.seq.pause()
+            self.editor.save()
             if not self._tray_hint_shown:
-                self.tray.showMessage("GameCapture", "Still running in the tray - matches keep recording.",
+                self.tray.showMessage("GameCapture", "Still running in the tray - your games keep recording.",
                                       Icons.app_icon(), 3000)
                 self._tray_hint_shown = True
             return
@@ -480,6 +503,7 @@ class MainWindow(QMainWindow):
         self._quitting = True
         self.status_timer.stop()
         self.sessions.player.unload()
+        self.editor.shutdown()
         rec = self.engine.recorder
         if rec is not None and rec.is_recording:
             self._show_window()

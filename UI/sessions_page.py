@@ -56,7 +56,7 @@ class SessionsPage(QWidget):
         self.crumb = QLabel()
         self.crumb.setObjectName("Crumb")
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search champion, result, mode...")
+        self.search.setPlaceholderText("Search game, character, result, mode...")
         self.search.setClearButtonEnabled(True)
         self.search.setFixedWidth(260)
         self.search.addAction(Icons.icon("search", Palette.TEXT_MUTED, 16), QLineEdit.ActionPosition.LeadingPosition)
@@ -84,6 +84,8 @@ class SessionsPage(QWidget):
                                   "and copy the file - paste it into Discord")
         self.clips_btn = IconTextButton("scissors", "Export clips")
         self.clips_btn.setToolTip("One file per ticked highlight - instant, no re-encode")
+        self.edit_btn = IconTextButton("nav_editor", "Edit")
+        self.edit_btn.setToolTip("Send the ticked highlights to the video editor to cut, trim and join them")
         self.reel_btn = IconTextButton("reel", "Highlight reel", primary=True)
         self.reel_btn.setToolTip("All ticked highlights in one video (GPU encode)")
         bar = QHBoxLayout()
@@ -94,7 +96,7 @@ class SessionsPage(QWidget):
         bar.addSpacing(8)
         bar.addWidget(self.hl_sub)
         bar.addStretch()
-        for b in (self.share_btn, self.clips_btn, self.reel_btn):
+        for b in (self.share_btn, self.edit_btn, self.clips_btn, self.reel_btn):
             bar.addWidget(b)
 
         self.player = PlayerPanel()
@@ -178,6 +180,7 @@ class SessionsPage(QWidget):
         self.share_btn.clicked.connect(self._share)
         self.clips_btn.clicked.connect(lambda: self._export("clips"))
         self.reel_btn.clicked.connect(lambda: self._export("reel"))
+        self.edit_btn.clicked.connect(lambda: self.current and self.win.open_in_editor(self.current, self._segments()))
         self.sig.progress.connect(self._on_progress)
         self.sig.done.connect(self._on_done)
 
@@ -209,7 +212,7 @@ class SessionsPage(QWidget):
         self.export_label.setText("")
 
     def open_at(self, video_path: str, video_time: float) -> None:
-        """From the Favorites page: open a match at a specific highlight."""
+        """From the Favorites page: open a recording at a specific highlight."""
         entry = next((e for e in self.all_entries if str(e.video) == video_path), None)
         if entry is None:
             return
@@ -269,7 +272,7 @@ class SessionsPage(QWidget):
             if m is self.current_marker:
                 self.hl_list.setCurrentItem(item)
         if self.hl_list.count() == 0:
-            text = ("Select a match above" if self.current is None else
+            text = ("Select a recording above" if self.current is None else
                     "No highlights - this was a manual recording" if not markers else
                     "No highlights involving you (tick 'Show everyone's events')")
             placeholder = QListWidgetItem(text)
@@ -375,6 +378,7 @@ class SessionsPage(QWidget):
         idle = self.current is not None and not self._exporting
         has_segs = bool(self._segments()) if self.current else False
         self.clips_btn.setEnabled(idle and has_segs)
+        self.edit_btn.setEnabled(idle and has_segs)
         self.reel_btn.setEnabled(idle and has_segs)
         self.share_btn.setEnabled(idle and self.current_marker is not None)
 

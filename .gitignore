@@ -1,0 +1,7 @@
+# Your settings live in %APPDATA%\GameCapture (see README "Settings and data"), not in the project folder.
+Logs/
+Bin/*.exe
+__pycache__/
+*.pyc
+.venv/
+venv/

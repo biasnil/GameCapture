@@ -148,8 +148,11 @@ class GameSettingsTests(TempDirTest):
         support = [g.support for g in games]
         self.assertEqual(support, sorted(support, key=["highlights", "auto", "planned"].index))
         self.assertEqual({g.id for g in games if g.support == "highlights"}, {"league", "cs2"})
-        self.assertEqual({g.id for g in games if g.support == "auto"},
-                         {"tft", "apex", "valorant", "deadlock", "marvel_rivals", "repo"})
+        self.assertTrue({"tft", "apex", "valorant", "deadlock", "marvel_rivals", "repo", "dota2", "fortnite"}
+                        <= {g.id for g in games if g.support == "auto"})
+        # the bigger catalogue is off until you switch a game on; the original games stay on
+        self.assertFalse(AppConfig().game("dota2").enabled)
+        self.assertTrue(AppConfig().game("apex").enabled)
         self.assertTrue(all(g.processes for g in GameRegistry.supported()))
         self.assertEqual(GameRegistry.get("cs2").initials, "CS")
         self.assertEqual(GameRegistry.REPO.initials, "RE")
