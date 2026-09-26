@@ -75,8 +75,9 @@ class GameRegistry:
                         "Riot has no local match API for Valorant - records the whole time the game is open. "
                         "Use the Bookmark hotkey for highlights.")
     DEADLOCK = GameInfo("deadlock", "Deadlock", "DL", {}, "auto", ("deadlock.exe",), "#8c7a5b",
-                        "No live API (deadlock-api.com is post-match stats) - records the whole time the game is "
-                        "open. Use the Bookmark hotkey for highlights.")
+                        "Records the whole time the game is open. Afterwards deadlock-api.com's match history "
+                        "cuts it into one video per match (hero, result, K/D/A) with your kills and deaths "
+                        "marked. Use the Bookmark hotkey for anything else.")
     MARVEL_RIVALS = GameInfo("marvel_rivals", "Marvel Rivals", "MR", {}, "auto", ("Marvel-Win64-Shipping.exe",),
                              "#e8b923", "No live API (marvelrivalsapi.com has match totals, no timestamps) - "
                              "records the whole time the game is open. Use the Bookmark hotkey for highlights.")

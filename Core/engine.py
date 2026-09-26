@@ -26,6 +26,7 @@ class Engine:
         self.pipeline: VideoPipeline | None = None
         self.watcher: LeagueMatchWatcher | None = None   # League + TFT
         self.watchers: list[GameWatcher] = []
+        self.deadlock = None   # DeadlockEnricher (per-match videos after a session)
         self._hotkeys = None
 
     def prepare(self) -> bool:
@@ -84,8 +85,19 @@ class Engine:
 
     def _session_watcher(self, game) -> GameWatcher:
         from Games.processes import ProcessMonitor
+        from Games.registry import GameRegistry
         from Games.session_watcher import ProcessSessionWatcher
         names = self.cfg.game(game.id).processes or game.processes
+        if game.id == GameRegistry.DEADLOCK.id:
+            from Games.deadlock import DeadlockEnricher, DeadlockWatcher, SteamAccount
+            if self.deadlock is None:
+                self.deadlock = DeadlockEnricher(self.cfg.recording.resolved_output_dir(), self.ffmpeg,
+                                                 lambda: self.cfg.game("deadlock"), self.recorder.discard)
+                self.deadlock.start()
+            return DeadlockWatcher(self.cfg.auto, self.recorder, enabled=self.auto_enabled,
+                                   monitor=ProcessMonitor(names), enricher=self.deadlock,
+                                   account=lambda: self.cfg.game("deadlock").options.get("account_id")
+                                   or SteamAccount.active_account_id())
         return ProcessSessionWatcher(game, self.cfg.auto, self.recorder, enabled=self.auto_enabled,
                                      monitor=ProcessMonitor(names))
 
@@ -197,6 +209,7 @@ class Engine:
         if self.watcher is not None and self.watcher not in self.watchers:
             steps.append(("match watcher", self.watcher.shutdown))
         steps.append(("recorder", self._stop_recorder))
+        steps.append(("Deadlock lookups", lambda: self.deadlock and self.deadlock.stop()))
         for name, step in steps:
             try:
                 step()

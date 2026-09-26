@@ -249,6 +249,8 @@ class GameDetailSection(SettingsSection):
                                            "Comma-separated game mode ids, e.g. PRACTICETOOL, ARAM, CHERRY (Arena)"))
         if game.id == "cs2":
             self._build_cs2()
+        if game.id == "deadlock":
+            self._build_deadlock()
         if game.custom:
             self._build_custom()
         if game.support == "auto" and game.id != "tft":
@@ -359,6 +361,62 @@ class GameDetailSection(SettingsSection):
         self.changed()
         self.page.games_changed(select="games")
 
+    # ---------- Deadlock ----------
+
+    def _build_deadlock(self) -> None:
+        self.body.addWidget(self.label("Match videos (deadlock-api.com)"))
+        opts = self.cfg.game("deadlock").options
+        self.dl_split = ToggleSwitch(opts.get("split", True))
+        self.dl_split.toggled.connect(lambda on: self._dl_set("split", on))
+        self.body.addWidget(SettingRow("One video per match", self.dl_split,
+                                       "After you close Deadlock, cut the session into matches labelled with hero, "
+                                       "result and K/D/A. Off = keep one video with every match marked"))
+        self.dl_account = QLineEdit()
+        self.dl_account.setFixedWidth(200)
+        self.dl_account.editingFinished.connect(self._dl_save_account)
+        self.body.addWidget(SettingRow("Steam account ID", self.dl_account,
+                                       "Found automatically from Steam. Only fill this in if it's wrong "
+                                       "(the number in your Steam friend code)"))
+        self.dl_offset = QSpinBox()
+        self.dl_offset.setRange(-120, 120)
+        self.dl_offset.setSuffix(" s")
+        self.dl_offset.setFixedWidth(100)
+        self.dl_offset.valueChanged.connect(lambda v: self._dl_set("offset_s", v))
+        self.body.addWidget(SettingRow("Timing offset", self.dl_offset,
+                                       "If kill markers land early or late, shift them here (+ = later)"))
+        self.dl_status = QLabel()
+        self.dl_status.setObjectName("Muted")
+        self.dl_status.setWordWrap(True)
+        self.body.addWidget(self.dl_status)
+
+    def _dl_set(self, key: str, value) -> None:
+        if not self._loading:
+            self.cfg.game("deadlock").options[key] = value
+            self.changed()
+
+    def _dl_save_account(self) -> None:
+        text = self.dl_account.text().strip()
+        opts = self.cfg.game("deadlock").options
+        if text.isdigit():
+            opts["account_id"] = int(text)
+        else:
+            opts.pop("account_id", None)
+        self.changed()
+
+    def _dl_load(self) -> None:
+        from Games.deadlock import SteamAccount
+        opts = self.cfg.game("deadlock").options
+        self.dl_split.setChecked(opts.get("split", True))
+        self.dl_offset.setValue(int(opts.get("offset_s", 0)))
+        detected = SteamAccount.active_account_id()
+        self.dl_account.setPlaceholderText(str(detected) if detected else "Steam not running")
+        self.dl_account.setText(str(opts["account_id"]) if opts.get("account_id") else "")
+        enricher = getattr(self.page.win.engine, "deadlock", None)
+        waiting = len(enricher.jobs) if enricher else 0
+        self.dl_status.setText(f"{waiting} session(s) waiting for match data - new matches can take a while to "
+                               f"appear online." if waiting else "Needs internet after each session. "
+                               "Your recording stays as one video if no matches are found.")
+
     # ---------- common ----------
 
     def _set_enabled(self, on: bool) -> None:
@@ -397,6 +455,8 @@ class GameDetailSection(SettingsSection):
             self.procs.setText(", ".join(gs.processes))
         if self.game.custom:
             self.name_edit.setText(gs.name)
+        if self.game.id == "deadlock":
+            self._dl_load()
         self._loading = False
 
 

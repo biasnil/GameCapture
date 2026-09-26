@@ -18,6 +18,7 @@ log = logging.getLogger("gamecapture.session")
 class GameSession:
     recording_id: str | None
     started: float = field(default_factory=time.monotonic)
+    started_wall: float = field(default_factory=time.time)   # unix time, for games with post-match APIs
 
 
 class ProcessSessionWatcher(GameWatcher):
@@ -80,3 +81,10 @@ class ProcessSessionWatcher(GameWatcher):
             game = {"title": self.GAME.name, "mode": "", "result": "",
                     "game_length_s": round(time.monotonic() - s.started, 1)}
             self.write_sidecar(path, self.GAME.id, game, markers)
+            try:
+                self.after_save(path, s.started_wall, time.time())
+            except Exception:
+                log.exception("%s: post-session step failed - the recording is saved", self.GAME.name)
+
+    def after_save(self, path, started_wall: float, ended_wall: float) -> None:
+        """Hook for games that look up match data after the session (Deadlock)."""

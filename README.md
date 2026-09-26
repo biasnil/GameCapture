@@ -54,7 +54,8 @@ Desktop shortcut: point it at `GameCapture.pyw` and set its icon to `Assets\app_
 | League of Legends | Riot's local Live Client Data API | Automatic: kills, deaths, assists, multikills, objectives, steals, aces |
 | Counter-Strike 2 | Valve's official Game State Integration (VAC-safe). Settings > Counter-Strike 2 > **Install**, then restart CS2 once | Automatic: kills, headshots, Double/Triple/Quadra kill, ACE, deaths, assists, round MVPs, final score |
 | Teamfight Tactics | League's local API (game mode TFT) - one video per match | Bookmarks |
-| Apex Legends, Valorant, Deadlock, Marvel Rivals, R.E.P.O. | The game's process is running - one video per play session (on by default) | Bookmarks |
+| Deadlock | The game's process is running; after you close it, the community Deadlock API (deadlock-api.com) cuts the session into one video per match | Automatic after the session: kills, multikills, deaths - plus bookmarks |
+| Apex Legends, Valorant, Marvel Rivals, R.E.P.O. | The game's process is running - one video per play session (on by default) | Bookmarks |
 | Dota 2, Overwatch 2, Fortnite, Rocket League, Minecraft (Bedrock), PUBG, Rainbow Six Siege, GTA V, Roblox, Genshin Impact, Destiny 2, Helldivers 2, Elden Ring | The game's process is running - one video per play session (switch on in Settings > Games) | Bookmarks |
 | **Any other game** | Settings > Games > **Add a game**: pick it from the running programs or browse to its `.exe` | Bookmarks |
 
@@ -63,7 +64,8 @@ manual recordings. Bookmarks become highlights like any other: timeline icons, c
 
 Each game can be switched on/off in Settings > Games. If a game update renames its executable, change
 it on that game's settings page - it takes effect straight away, no restart. Games without a live match
-API (Valorant, Marvel Rivals, Deadlock and every game you add yourself) record whole play sessions.
+API (Valorant, Marvel Rivals and every game you add yourself) record whole play sessions. Deadlock
+records the session too, then splits it into matches once they appear online (Settings > Deadlock).
 
 ### Adding any game
 1. Start the game.

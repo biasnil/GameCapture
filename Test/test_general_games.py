@@ -71,6 +71,7 @@ class CustomGameTests(TempDirTest):
         from Core.engine import Engine
         cfg = self.cfg_with()
         cfg.auto.enabled = False                   # watchers run, but never record in a test
+        cfg.recording.output_dir = str(self.tmp)
         engine = Engine(cfg)
         engine.recorder = FakeRecorder(self.tmp, FakeClock())
         engine._psutil = True
@@ -91,9 +92,12 @@ class CustomGameTests(TempDirTest):
             del cfg.games["custom_my_indie_game"]
             engine.sync_game_watchers()            # removed
             self.assertNotIn("custom_my_indie_game", [w.GAME.id for w in engine.watchers])
+            self.assertIsNotNone(engine.deadlock)  # Deadlock gets its match-lookup watcher
         finally:
             for w in engine.watchers:
                 w.shutdown()
+            if engine.deadlock:
+                engine.deadlock.stop()
 
 
 class AppDataTests(TempDirTest):
