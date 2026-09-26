@@ -69,6 +69,10 @@ QPushButton#SegmentSmall:checked {{ background: #1f2a2e; border-color: {P.ACCENT
 #GameTile {{ background: {P.BG_CARD}; border: 1px solid #252b34; border-radius: 8px; }}
 #GameTile:hover {{ background: {P.BG_CARD_HOVER}; }}
 #GameTile[planned="true"] {{ background: #15181e; }}
+QPushButton#Chip {{ background: {P.BG_BUTTON}; border: 1px solid {P.BORDER_SOFT}; border-radius: 10px;
+    padding: 3px 10px 3px 8px; color: {P.TEXT_MUTED}; font-size: 12px; }}
+QPushButton#Chip:hover {{ border-color: {P.BORDER}; color: {P.TEXT}; }}
+QPushButton#Chip:checked {{ background: #1a2a2c; border-color: {P.ACCENT}; color: {P.TEXT}; }}
 QToolTip {{ background: {P.BG_BUTTON}; color: {P.TEXT}; border: 1px solid {P.BORDER}; padding: 4px; }}
 """
 

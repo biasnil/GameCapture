@@ -112,6 +112,9 @@ Every other game records whole sessions.
 If you stop a Session recording by hand, it stays stopped until you close the game.
 
 ## The app
+- **Sessions** - highlight **filter chips** above the list (Kills 6, Deaths 5, Objectives 3, Towers,
+  Bookmarks, Everyone): click to show / hide that kind in the list and on the timeline, double-click
+  to show only that kind.
 - **Sessions** - recording cards (thumbnail, game, character, result, KDA - whatever the game
   reports), highlight title bar (favourite / folder / delete / Share clip / Edit / Export clips /
   Highlight reel), player, and an icon timeline above a minute ruler. Share copies the clip so you
@@ -164,6 +167,13 @@ Outplayed-style editing, in the sidebar under **Video editor**:
   **Split** (scissors / `S`) cuts the clip at the playhead, **Duplicate** (`Ctrl+D`) and **Delete** do
   what they say, and **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) cover every edit. The preview plays the
   clips in order, straight across cuts and files.
+- **Zoom**: `Ctrl` + mouse wheel (or the magnifier buttons) zooms the timeline around the mouse, the
+  wheel scrolls it; the ruler gets finer as you zoom and the view follows the playhead while playing.
+- **Elements** tab: add **Text** (titles, captions - white with an outline, any colour) or an
+  **Image** (logo, sticker; PNG transparency works). Drag it on the preview to move it, drag its
+  corner to resize it; set size, opacity and when it shows (or **Fit to clip**). Elements sit on the
+  thin track above the clips, where you drag them in time and trim their edges. They are burned
+  into the export exactly as the preview shows them.
 - **Export settings**: resolution (same as the video, 1440p ... 480p - never upscaled), frame rate,
   quality and sound. **Export video** renders one `.mp4` into your clips folder, using the GPU encoder
   the recorder picked. Clips of different sizes are letterboxed; clips without sound get silence.

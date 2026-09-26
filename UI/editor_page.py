@@ -6,11 +6,12 @@ to the app data folder as you edit."""
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
@@ -24,11 +25,12 @@ from Core.paths import Paths
 from Core.sidecar import Sidecar
 from Theme.palette import Palette
 from UI.dual_player import DualPlayer
-from UI.edit_timeline import EditTimeline
+from UI.edit_timeline import EditTimeline, TimelineView
+from UI.elements import ElementOverlay, ElementRenderer, ElementsPanel
 from UI.frames import FrameCache
 from UI.icons import Icons
 from UI.shell import Shell
-from UI.widgets import IconButton, IconTextButton, SegmentedControl, ToggleSwitch
+from UI.widgets import IconButton, IconTextButton, InfoTip, SegmentedControl, ToggleSwitch
 
 if TYPE_CHECKING:
     from Core.clips import Segment
@@ -222,6 +224,7 @@ class EditorPage(QWidget):
         self.seq = SequencePlayer(allowed=self.win.preload_allowed)
         self.video = self.seq.view
         self.video.setMinimumHeight(240)
+        self.overlay = ElementOverlay(self.video, self.win)   # text / images over the preview
         self.play_btn = IconButton("play", "Play / pause (Space)", size=24, color=Palette.TEXT)
         self._play_icon = Icons.icon("play", Palette.TEXT, 24)
         self._pause_icon = Icons.icon("pause", Palette.TEXT, 24)
@@ -268,9 +271,18 @@ class EditorPage(QWidget):
         self.clip_info.setObjectName("Muted")
         self.total_label = QLabel()
         self.total_label.setObjectName("Muted")
+        self.zoom_out_btn = IconButton("zoom_out", "Zoom out (Ctrl + mouse wheel)", size=18)
+        self.zoom_in_btn = IconButton("zoom_in", "Zoom in (Ctrl + mouse wheel)", size=18)
+        self.zoom_fit_btn = IconButton("zoom_fit", "Fit the whole timeline", size=18)
         tools = QHBoxLayout()
         tools.addWidget(self.clip_info)
+        tools.addWidget(InfoTip("Click a clip to select it and jump there. Drag a clip to move it, drag its edges to "
+                                "trim. Deleting or trimming closes the gap.<br><br>The thin track above the clips "
+                                "holds text and images.<br><br>Ctrl + mouse wheel zooms, the wheel scrolls."))
         tools.addStretch()
+        for b in (self.zoom_out_btn, self.zoom_fit_btn, self.zoom_in_btn):
+            tools.addWidget(b)
+        tools.addSpacing(14)
         for b in (self.undo_btn, self.redo_btn):
             tools.addWidget(b)
         tools.addSpacing(14)
@@ -279,6 +291,7 @@ class EditorPage(QWidget):
         tools.addSpacing(10)
         tools.addWidget(self.total_label)
         self.timeline = EditTimeline(self.frames)
+        self.timeline_view = TimelineView(self.timeline)
 
         self.progress = QProgressBar()
         self.progress.setVisible(False)
@@ -294,11 +307,12 @@ class EditorPage(QWidget):
         root.addLayout(top)
         root.addLayout(middle, 1)
         root.addLayout(tools)
-        root.addWidget(self.timeline)
+        root.addWidget(self.timeline_view)
         root.addLayout(status_row)
 
     def _build_side_panel(self) -> QWidget:
-        self.side_tabs = SegmentedControl([("videos", "Project videos"), ("export", "Export settings")], compact=True)
+        self.side_tabs = SegmentedControl([("videos", "Videos"), ("elements", "Elements"), ("export", "Export")],
+                                          compact=True)
         self.side_tabs.set_value("videos")
         self.side_stack = QStackedWidget()
 
@@ -324,12 +338,14 @@ class EditorPage(QWidget):
         vl = QVBoxLayout(videos)
         vl.setContentsMargins(0, 0, 0, 0)
         vl.addWidget(self.sources, 1)
-        vl.addWidget(import_btn)
+        import_row = QHBoxLayout()
+        import_row.addWidget(import_btn, 1)
+        import_row.addWidget(InfoTip("Double-click a video to put each of its highlights on the timeline as its "
+                                     "own clip. <b>Whole video</b> adds it as one clip.<br><br>From Sessions: tick "
+                                     "highlights and press <b>Edit</b>."))
+        vl.addLayout(import_row)
         vl.addLayout(buttons)
-        hint = QLabel("Double-click a video to put its highlights on the timeline. From Sessions: tick highlights, press Edit.")
-        hint.setObjectName("Muted")
-        hint.setWordWrap(True)
-        vl.addWidget(hint)
+
 
         # --- export settings
         self.res_combo = QComboBox()
@@ -347,17 +363,18 @@ class EditorPage(QWidget):
         form.addRow("Frame rate", self.fps_combo)
         form.addRow("Quality", self.quality)
         form.addRow("Sound", self.audio_switch)
-        where = QLabel("Exported videos go to your clips folder (Clips page).")
-        where.setObjectName("Muted")
-        where.setWordWrap(True)
         export = QWidget()
         el = QVBoxLayout(export)
         el.setContentsMargins(0, 6, 0, 0)
         el.addLayout(form)
+        where = QLabel("Saves to your clips folder")
+        where.setObjectName("Muted")
         el.addWidget(where)
         el.addStretch()
 
+        self.elements_panel = ElementsPanel(self)
         self.side_stack.addWidget(videos)
+        self.side_stack.addWidget(self.elements_panel)
         self.side_stack.addWidget(export)
         panel = QWidget()
         panel.setFixedWidth(280)
@@ -368,7 +385,16 @@ class EditorPage(QWidget):
         return panel
 
     def _wire(self) -> None:
-        self.side_tabs.changed.connect(lambda v: self.side_stack.setCurrentIndex(0 if v == "videos" else 1))
+        self.side_tabs.changed.connect(self.show_tab)
+        self.zoom_in_btn.clicked.connect(lambda: self.timeline_view.zoom_by(1.5))
+        self.zoom_out_btn.clicked.connect(lambda: self.timeline_view.zoom_by(1 / 1.5))
+        self.zoom_fit_btn.clicked.connect(lambda: self.timeline_view.set_zoom(1.0))
+        self.timeline.elementSelected.connect(self.select_element)
+        self.overlay.selected.connect(self.select_element)
+        self.overlay.editStarted.connect(self._begin_drag_edit)
+        self.overlay.edited.connect(lambda: (self._end_drag_edit(), self.elements_changed()))
+        self.win.installEventFilter(self)
+        self.video.installEventFilter(self)
         self.name_edit.editingFinished.connect(self._rename)
         self.projects.activated.connect(self._on_project_picked)
         self.export_btn.clicked.connect(self.export)
@@ -412,9 +438,16 @@ class EditorPage(QWidget):
 
     def checkpoint(self) -> None:
         """Call before changing the project: remembers it for Undo."""
+        self._once_key = None
         self._undo.append(self.project.to_dict())
         del self._undo[:-self.HISTORY]
         self._redo.clear()
+
+    def checkpoint_once(self, key: str) -> None:
+        """One Undo step for a run of small edits to the same thing (a slider drag, typing)."""
+        if key != getattr(self, "_once_key", None):
+            self.checkpoint()
+            self._once_key = key
 
     def _begin_drag_edit(self) -> None:
         self._drag_snapshot = self.project.to_dict()
@@ -444,6 +477,9 @@ class EditorPage(QWidget):
         self.seq.set_project(self.project)
         self.timeline.set_project(self.project)
         self.timeline.set_selected(min(selected, len(self.project.clips) - 1))
+        element = self.overlay.current
+        self.overlay.set_project(self.project)
+        self.select_element(element if self.project.element(element) else "")
         self._fill_sources()
         self.changed()
         self.seek(min(t, self.project.duration))
@@ -466,6 +502,8 @@ class EditorPage(QWidget):
         self._loading = False
         self.seq.set_project(project)
         self.timeline.set_project(project)
+        self.overlay.set_project(project)
+        self.select_element("")
         self._fill_sources()
         self._fill_projects()
         self.seek(0.0)
@@ -777,6 +815,13 @@ class EditorPage(QWidget):
 
     def _on_position(self, t: float) -> None:
         self.timeline.set_position(t)
+        size = self.seq.dual.video_size()
+        if size.isValid() and size != self.overlay.video_size:
+            self.overlay.video_size = size
+            self.overlay.update()
+        self.overlay.set_position(t)
+        if self.seq.playing:
+            self.timeline_view.follow()
         self.time_label.setText(f"{Format.duration(t)} / {Format.duration(self.project.duration)}")
 
     def _update_labels(self) -> None:
@@ -788,7 +833,7 @@ class EditorPage(QWidget):
             self.clip_info.setText(f"{c.label or 'Clip'}  ·  {Format.duration(c.start)} - {Format.duration(c.end)}  "
                                    f"({Format.duration(c.duration)})")
         else:
-            self.clip_info.setText("Drag clips to reorder them, drag their edges to trim")
+            self.clip_info.setText("No clip selected")
         self.time_label.setText(f"{Format.duration(self.seq.position())} / {Format.duration(self.project.duration)}")
 
     def _update_buttons(self) -> None:
@@ -826,12 +871,16 @@ class EditorPage(QWidget):
         report = lambda frac, text: self.sig.progress.emit(int(frac * 100), text)  # noqa: E731
 
         def work():
+            folder = ElementRenderer.temp_folder()
             try:
-                path = exporter.export(project, out, encoder, report)
+                path = exporter.export(project, out, encoder, report,
+                                       render_overlays=lambda w, h: ElementRenderer.overlays(project, w, h, folder))
                 self.sig.done.emit(True, f"Saved {path.name}", path)
             except Exception as exc:
                 log.error("Editor export failed: %s", exc)
                 self.sig.done.emit(False, str(exc), None)
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
         threading.Thread(target=work, name="editor-export", daemon=True).start()
 
     def _on_progress(self, percent: int, text: str) -> None:
@@ -857,11 +906,56 @@ class EditorPage(QWidget):
         """Keyboard shortcuts while this page is showing (wired by the main window)."""
         if self.name_edit.hasFocus():
             return
-        {"Space": self.toggle_play, "S": self.split, "Delete": self.delete_clip, "Ctrl+D": self.duplicate,
+        {"Space": self.toggle_play, "S": self.split, "Delete": self._delete, "Ctrl+D": self.duplicate,
          "H": self.keep_highlights, "Ctrl+Z": self.undo, "Ctrl+Y": self.redo, "Ctrl+Shift+Z": self.redo,
          "Left": lambda: self.seek(max(0.0, self.seq.position() - 5)),
          "Right": lambda: self.seek(min(self.project.duration, self.seq.position() + 5)),
          "N": lambda: self.jump_clip(+1), "P": lambda: self.jump_clip(-1)}.get(key, lambda: None)()
+
+    def _delete(self) -> None:
+        """Delete key: the selected text / image if there is one, else the selected clip."""
+        if self.overlay.current:
+            self.elements_panel.delete()
+        else:
+            self.delete_clip()
+
+    # ================================================================ elements
+
+    def show_tab(self, tab: str) -> None:
+        self.side_tabs.set_value(tab)
+        self.side_stack.setCurrentIndex({"videos": 0, "elements": 1, "export": 2}[tab])
+
+    def select_element(self, element_id: str) -> None:
+        self.overlay.select(element_id)
+        self.timeline.set_selected_element(element_id)
+        self.elements_panel.refresh()
+        if element_id:
+            self.show_tab("elements")
+        self.overlay.refresh()
+
+    def elements_changed(self, rebuild: bool = True) -> None:
+        self.timeline.update()
+        self.overlay.refresh()
+        if rebuild:
+            self.elements_panel.refresh()
+        self.changed()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.overlay.wanted = True
+        self.overlay.refresh()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.overlay.wanted = False
+        self.overlay.refresh()
+
+    def eventFilter(self, obj, event) -> bool:
+        """Keep the elements layer glued to the preview when the window moves, resizes or minimises."""
+        if event.type() in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Hide,
+                            QEvent.Type.WindowStateChange):
+            self.overlay.refresh()
+        return False
 
     def release_file(self, video: Path) -> None:
         """Before a recording is deleted: let go of it if the preview has it open."""
@@ -869,6 +963,8 @@ class EditorPage(QWidget):
             self.seq.unload()
 
     def shutdown(self) -> None:
+        self.overlay.wanted = False
+        self.overlay.hide()
         self.save()
         self.seq.unload()
         self.frames.shutdown()

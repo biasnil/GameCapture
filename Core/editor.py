@@ -62,6 +62,44 @@ class EditClip:
 
 
 @dataclass
+class Element:
+    """Text or an image shown on top of the video from `start` to `end` (timeline seconds).
+    Position and size are fractions of the frame, so they look the same at any export size."""
+    kind: str = "text"       # text | image
+    start: float = 0.0
+    end: float = 3.0
+    x: float = 0.5           # centre, 0 = left edge, 1 = right edge
+    y: float = 0.15          # centre, 0 = top, 1 = bottom
+    size: float = 0.08       # text: letter height / image: width - as a fraction of the frame
+    text: str = ""
+    path: str = ""           # image file
+    color: str = "#ffffff"
+    opacity: float = 1.0
+    id: str = field(default_factory=_new_id)
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+    @property
+    def name(self) -> str:
+        return self.text.strip() or "Text" if self.kind == "text" else Path(self.path).name or "Image"
+
+    def visible_at(self, t: float) -> bool:
+        return self.start <= t < self.end
+
+
+@dataclass
+class Overlay:
+    """An element rendered to an image for export: where (pixels, top-left) and when."""
+    image: str
+    x: int
+    y: int
+    start: float
+    end: float
+
+
+@dataclass
 class ExportSettings:
     resolution: str = "source"   # source (first clip's size) | 1440p | 1080p | 720p | 480p
     fps: int = 60
@@ -77,6 +115,7 @@ class EditProject:
     sources: list[SourceVideo] = field(default_factory=list)
     clips: list[EditClip] = field(default_factory=list)
     export: ExportSettings = field(default_factory=ExportSettings)
+    elements: list[Element] = field(default_factory=list)   # text / images on top, in drawing order
     id: str = field(default_factory=_new_id)
     updated: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -223,6 +262,32 @@ class EditProject:
 
     # ---------- files ----------
 
+    # ---------- elements ----------
+
+    def add_element(self, element: Element) -> Element:
+        element.end = max(element.end, element.start + MIN_CLIP)
+        self.elements.append(element)
+        return element
+
+    def element(self, element_id: str) -> Element | None:
+        return next((e for e in self.elements if e.id == element_id), None)
+
+    def remove_element(self, element_id: str) -> None:
+        self.elements = [e for e in self.elements if e.id != element_id]
+
+    def elements_at(self, t: float) -> list[Element]:
+        return [e for e in self.elements if e.visible_at(t)]
+
+    def move_element(self, element_id: str, start: float | None = None, end: float | None = None) -> None:
+        """Change when an element shows (never shorter than MIN_CLIP, never before 0)."""
+        e = self.element(element_id)
+        if e is None:
+            return
+        if start is not None:
+            e.start = min(max(0.0, start), e.end - MIN_CLIP)
+        if end is not None:
+            e.end = max(end, e.start + MIN_CLIP)
+
     def to_dict(self) -> dict:
         data = asdict(self)
         data["schema"] = self.SCHEMA
@@ -239,6 +304,8 @@ class EditProject:
             clips=[EditClip(c["source"], float(c["start"]), float(c["end"]), c.get("label", ""),
                             c.get("id") or _new_id()) for c in data.get("clips", []) if c.get("source")],
             export=ExportSettings(**{k: v for k, v in (data.get("export") or {}).items() if k in export_fields}),
+            elements=[Element(**{k: v for k, v in e.items() if k in Element.__dataclass_fields__})
+                      for e in data.get("elements", []) if isinstance(e, dict)],
             id=data.get("id") or _new_id(),
             updated=data.get("updated") or datetime.now().isoformat(timespec="seconds"),
         )
@@ -318,7 +385,7 @@ class ProjectExporter:
         return w - w % 2, h - h % 2
 
     def build_args(self, project: EditProject, out: Path, encoder: str,
-                   probes: dict[str, dict]) -> list[str]:
+                   probes: dict[str, dict], overlays: list[Overlay] = ()) -> list[str]:
         clips = [c for c in project.clips if c.duration > 0]
         if not clips:
             raise ValueError("The timeline is empty")
@@ -343,7 +410,17 @@ class ProjectExporter:
             pads.append(pad)
         graph = ";".join(chains) + ";" + "".join(pads) + \
             f"concat=n={len(clips)}:v=1:a={int(want_audio)}[v]" + ("[a]" if want_audio else "")
-        args += ["-filter_complex", graph, "-map", "[v]"]
+        # text / images on top, each only while it's on screen
+        video = "[v]"
+        for k, ov in enumerate(overlays):
+            args += ["-i", ov.image]
+            graph += (f";{video}[{len(clips) + k}:v]overlay=x={ov.x}:y={ov.y}:"
+                      f"enable='between(t,{ov.start:.3f},{ov.end:.3f})'[o{k}]")
+            video = f"[o{k}]"
+        if overlays:
+            graph += f";{video}format=yuv420p[vout]"
+            video = "[vout]"
+        args += ["-filter_complex", graph, "-map", video]
         if want_audio:
             args += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
         args += [*FFmpeg.encoder(encoder).file_args(int(project.export.quality)),
@@ -351,7 +428,9 @@ class ProjectExporter:
         return args
 
     def export(self, project: EditProject, out: Path, encoder: str = "x264",
-               progress: Progress | None = None) -> Path:
+               progress: Progress | None = None,
+               render_overlays: Callable[[int, int], list[Overlay]] | None = None) -> Path:
+        """render_overlays(width, height) -> the project's elements drawn as images at the export size."""
         missing = project.missing_sources()
         used = {c.source for c in project.clips}
         if any(m in used for m in missing):
@@ -360,7 +439,8 @@ class ProjectExporter:
         if progress:
             progress(0.0, "Preparing...")
         probes = {src: self.probe(Path(src)) for src in used}
-        args = self.build_args(project, out, encoder, probes)
+        overlays = render_overlays(*self.output_size(project, probes)) if render_overlays and project.elements else []
+        args = self.build_args(project, out, encoder, probes, overlays)
         total_us = project.duration * 1_000_000
         with self.ffmpeg.popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                encoding="utf-8", errors="replace") as proc:

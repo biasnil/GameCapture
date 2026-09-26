@@ -93,6 +93,10 @@ class DualPlayer(QObject):
         """The active player is still opening a file (its position isn't meaningful yet)."""
         return self._pending_seek is not None
 
+    def video_size(self):
+        """Pixel size of the active video (invalid until its first frame)."""
+        return self._a.video.videoSink().videoSize()
+
     def holds(self, path: str) -> bool:
         """Either player has this file open."""
         return any(slot.path == path for slot in self._slots)

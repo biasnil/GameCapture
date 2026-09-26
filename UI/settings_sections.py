@@ -20,7 +20,7 @@ from Games.registry import GameInfo, GameRegistry, RecordingModes
 from Theme.palette import Palette
 from UI.icons import Icons
 from UI.shell import Shell
-from UI.widgets import (Banner, IconButton, IconTextButton, LegendItem, PresetCard, SectionHeader, SegmentedControl,
+from UI.widgets import (Banner, IconButton, IconTextButton, InfoTip, LegendItem, PresetCard, SectionHeader, SegmentedControl,
                         SettingRow, ToggleSwitch, UsageBar)
 
 if TYPE_CHECKING:
@@ -67,10 +67,22 @@ class SettingsSection(QScrollArea):
             self.page.changed(restart)
 
     @staticmethod
-    def label(text: str) -> QLabel:
+    def label(text: str, info: str = "") -> QWidget:
+        """Small section heading, with an (i) explanation next to it if `info` is given."""
         lbl = QLabel(text)
         lbl.setStyleSheet(f"color: {Palette.TEXT_MUTED}; font-weight: 600; margin-top: 8px;")
-        return lbl
+        if not info:
+            return lbl
+        box = QWidget()
+        row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(lbl)
+        tip = InfoTip(info)
+        tip.setContentsMargins(0, 8, 0, 0)
+        row.addWidget(tip)
+        row.addStretch()
+        return box
 
     @staticmethod
     def seconds(maximum: float = 60) -> QDoubleSpinBox:
@@ -156,16 +168,17 @@ class GamesSection(SettingsSection):
         self.search.setClearButtonEnabled(True)
         self.search.addAction(Icons.icon("search", Palette.TEXT_MUTED, 16), QLineEdit.ActionPosition.LeadingPosition)
         self.search.textChanged.connect(self._layout_tiles)
-        self.body.addWidget(self.search)
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search, 1)
+        search_row.addWidget(InfoTip(
+            f"<b>Auto-record + highlights</b>: kills, objectives... are found automatically.<br>"
+            f"<b>Auto-record + bookmarks</b>: press {Format.hotkey(self.cfg.hotkeys.bookmark)} after a great play.<br>"
+            f"Game not listed? <b>Add a game</b> - any game works - or record anything with "
+            f"{Format.hotkey(self.cfg.hotkeys.toggle)}."))
+        self.body.addLayout(search_row)
         self.grid = QGridLayout()
         self.grid.setSpacing(8)
         self.body.addLayout(self.grid)
-        note = QLabel(f"Highlights = detected automatically. Bookmarks = press {Format.hotkey(self.cfg.hotkeys.bookmark)} "
-                      f"after a great play. Game not listed? Use Add a game - any game works - or record anything "
-                      f"with the Record button or {Format.hotkey(self.cfg.hotkeys.toggle)}.")
-        note.setObjectName("Muted")
-        note.setWordWrap(True)
-        self.body.addWidget(note)
         self.finish()
         self.tiles: list[GameTile] = []
         self.rebuild()
@@ -221,7 +234,10 @@ class GameDetailSection(SettingsSection):
         self.key, self.title = f"game:{game.id}", game.name
         head = QHBoxLayout()
         head.addWidget(GameBadge(game, 48))
-        head.addWidget(SectionHeader(game.name, game.status_text), 1)
+        head.addWidget(SectionHeader(game.name, game.status_text))
+        head.addWidget(InfoTip(f"{game.how}<br><br>Press {Format.hotkey(self.cfg.hotkeys.bookmark)} in game to add "
+                               "your own highlight at any moment."), 0, Qt.AlignmentFlag.AlignTop)
+        head.addStretch()
         self.body.addLayout(head)
         gs = self.cfg.game(game.id)
         auto_hint = ("Start recording when a match starts, stop when it ends" if game.support == "highlights"
@@ -265,14 +281,6 @@ class GameDetailSection(SettingsSection):
         if game.custom:
             self._build_remove()
 
-        self.body.addWidget(self.label("How it works"))
-        how = QLabel(game.how)
-        how.setWordWrap(True)
-        self.body.addWidget(how)
-        tip = QLabel(f"Press {Format.hotkey(self.cfg.hotkeys.bookmark)} in game to add your own highlight at any moment.")
-        tip.setObjectName("Muted")
-        tip.setWordWrap(True)
-        self.body.addWidget(tip)
         self.finish()
 
     # ---------- CS2 ----------
@@ -1092,22 +1100,14 @@ class AppSection(SettingsSection):
             "Jumping to the next highlight or editor clip is instant instead of stuttering. Uses a second "
             "video decoder (roughly 100-200 MB) while you watch; always paused while recording",
             lambda: g.precache, lambda on: setattr(g, "precache", on))
-        self.body.addWidget(self.label("Hotkeys"))
+        self.body.addWidget(self.label("Hotkeys", "They work while in game. Change them in config.json "
+                                                  "(restart to apply)."))
         for name, combo in (("Start / stop recording", hk.toggle), ("Bookmark a highlight", hk.bookmark),
                             ("Quit GameCapture", hk.quit)):
             value = QLabel(Format.hotkey(combo))
             value.setObjectName("Muted")
             self.body.addWidget(SettingRow(name, value))
-        hint = QLabel("Hotkeys work while in game. Change them in config.json (restart to apply).")
-        hint.setWordWrap(True)
-        hint.setObjectName("Muted")
-        self.body.addWidget(hint)
-        self.body.addWidget(self.label("Files"))
-        where = QLabel(f"Settings, logs and editor projects are kept in {Paths.DATA}")
-        where.setObjectName("Muted")
-        where.setWordWrap(True)
-        where.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.body.addWidget(where)
+        self.body.addWidget(self.label("Files", f"Settings, logs and editor projects are kept in<br>{Paths.DATA}"))
         row = QHBoxLayout()
         cfg_btn = IconTextButton("app_window", "Open config.json")
         cfg_btn.clicked.connect(lambda: Shell.reveal(Paths.CONFIG))
