@@ -1,11 +1,13 @@
 """Editor timeline: the project's clips as filmstrips with their highlight icons, over a time ruler.
 
 Click a clip to select it (and seek there), drag its middle to move it, drag its edges to trim it.
-Click or drag the ruler to seek. The whole project always fits the width."""
+Click or drag the ruler to seek. The whole project always fits the width.
+
+The clips and ruler are drawn once into a cached pixmap; during playback only the playhead moves."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QToolTip, QWidget
 
 from Core.editor import EditProject
@@ -39,6 +41,8 @@ class EditTimeline(QWidget):
         self._name_font = QFont()
         self._name_font.setPixelSize(11)
         self._name_font.setBold(True)
+        self._static: QPixmap | None = None
+        self._static_key: tuple | None = None
         frames.ready.connect(self.update)
 
     # ---------- data ----------
@@ -50,8 +54,11 @@ class EditTimeline(QWidget):
         self.update()
 
     def set_position(self, seconds: float) -> None:
+        old = self._x(self.position)
         self.position = seconds
-        self.update()
+        new = self._x(seconds)
+        if int(old) != int(new):  # only repaint the strip the playhead moved across
+            self.update(QRect(int(min(old, new)) - 8, 0, int(abs(new - old)) + 17, self.height()))
 
     def set_selected(self, index: int) -> None:
         self.selected = index
@@ -123,27 +130,45 @@ class EditTimeline(QWidget):
 
     # ---------- painting ----------
 
-    def paintEvent(self, _event) -> None:
-        p = QPainter(self)
+    def _static_layer(self) -> QPixmap:
+        """Clips (filmstrips, icons, names, trim handles) and the ruler - redrawn only when they change."""
+        clips = tuple((c.id, c.start, c.end, c.label) for c in self.project.clips) if self.project else ()
+        key = (self.width(), self.height(), self.devicePixelRatioF(), id(self.project), clips, self.selected,
+               self.frames.generation, self._scale())
+        if self._static is not None and key == self._static_key:
+            return self._static
+        dpr = self.devicePixelRatioF()
+        pix = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         ry = self._ruler_y
         p.setPen(QPen(QColor(Palette.TRACK), 2))
         p.drawLine(QPointF(self.MARGIN, ry), QPointF(self.width() - self.MARGIN, ry))
-        if not self.project or not self.project.clips:
+        if not clips:
             p.setPen(QColor(Palette.TEXT_MUTED))
             p.drawText(QRectF(0, self.TRACK_TOP, self.width(), self.TRACK_H), Qt.AlignmentFlag.AlignCenter,
                        "Double-click a project video (or use Add to timeline) to start editing")
-            p.end()
-            return
-        rects = self._clip_rects()
-        for i, (clip, rect) in enumerate(zip(self.project.clips, rects)):
-            self._paint_clip(p, i, clip, rect)
-        p.setPen(QPen(QColor(Palette.ACCENT), 2))
-        p.drawLine(QPointF(self.MARGIN, ry), QPointF(self._x(self.position), ry))
-        self._paint_ruler(p, ry)
-        if self._drag and self._drag["kind"] == "move" and self._drag.get("moved"):
-            self._paint_drop_marker(p, rects)
-        self._paint_playhead(p, ry)
+        else:
+            for i, (clip, rect) in enumerate(zip(self.project.clips, self._clip_rects())):
+                self._paint_clip(p, i, clip, rect)
+            self._paint_ruler(p, ry)
+        p.end()
+        self._static, self._static_key = pix, key
+        return pix
+
+    def paintEvent(self, _event) -> None:
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._static_layer())
+        if self.project and self.project.clips:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            ry = self._ruler_y
+            p.setPen(QPen(QColor(Palette.ACCENT), 2))
+            p.drawLine(QPointF(self.MARGIN, ry), QPointF(self._x(self.position), ry))
+            if self._drag and self._drag["kind"] == "move" and self._drag.get("moved"):
+                self._paint_drop_marker(p, self._clip_rects())
+            self._paint_playhead(p, ry)
         p.end()
 
     def _paint_clip(self, p: QPainter, i: int, clip, rect: QRectF) -> None:

@@ -2,11 +2,14 @@
 
 Your moments are icons (grouped with a count badge when close together); other players'
 events are faint ticks on the ruler. Click an icon to jump there, click/drag the ruler to
-seek. Shaded bands show what will be exported."""
+seek. Shaded bands show what will be exported.
+
+Everything except the playhead is drawn once into a cached pixmap: the player reports its position
+many times a second, and redrawing every SVG icon each time steals time from video playback."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
+from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QToolTip, QWidget
 
 from Core.formatting import Format
@@ -38,6 +41,8 @@ class Timeline(QWidget):
         self._badge_font.setBold(True)
         self._label_font = QFont()
         self._label_font.setPixelSize(11)
+        self._static: QPixmap | None = None
+        self._static_key: tuple | None = None
 
     # ---------- data ----------
 
@@ -46,8 +51,11 @@ class Timeline(QWidget):
         self.update()
 
     def set_position(self, seconds: float) -> None:
+        old = self._x(self.position)
         self.position = seconds
-        self.update()
+        new = self._x(seconds)
+        if int(old) != int(new):  # only repaint the strip the playhead moved across
+            self.update(QRect(int(min(old, new)) - 8, 0, int(abs(new - old)) + 17, self.height()))
 
     def set_markers(self, markers: list[dict]) -> None:
         self.markers = markers
@@ -110,24 +118,42 @@ class Timeline(QWidget):
 
     # ---------- painting ----------
 
+    def _static_layer(self) -> QPixmap:
+        """Track, bands, ticks, ruler and icons - redrawn only when one of them changes."""
+        key = (self.width(), self.height(), self.devicePixelRatioF(), self.duration, id(self.markers),
+               len(self.markers), tuple(self.segments), id(self.selected),
+               self._hover["x"] if self._hover else None)
+        if self._static is not None and key == self._static_key:
+            return self._static
+        dpr = self.devicePixelRatioF()
+        pix = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pix.setDevicePixelRatio(dpr)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        ry = self._ruler_y
+        p.setPen(QPen(QColor(Palette.TRACK), 2))
+        p.drawLine(QPointF(self.MARGIN, ry), QPointF(self.width() - self.MARGIN, ry))
+        if self.duration:
+            self._groups = self._compute_groups()
+            self._paint_segments(p, ry)
+            self._paint_other_ticks(p, ry)
+            self._paint_ruler(p, ry)
+            for g in self._groups:
+                self._paint_group(p, g, ry)
+        p.end()
+        self._static, self._static_key = pix, key
+        return pix
+
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        ry, right = self._ruler_y, self.width() - self.MARGIN
-        p.setPen(QPen(QColor(Palette.TRACK), 2))
-        p.drawLine(QPointF(self.MARGIN, ry), QPointF(right, ry))
-        if not self.duration:
-            p.end()
-            return
-        self._groups = self._compute_groups()
-        self._paint_segments(p, ry)
-        p.setPen(QPen(QColor(Palette.ACCENT), 2))
-        p.drawLine(QPointF(self.MARGIN, ry), QPointF(self._x(self.position), ry))
-        self._paint_other_ticks(p, ry)
-        self._paint_ruler(p, ry)
-        for g in self._groups:
-            self._paint_group(p, g, ry)
-        self._paint_playhead(p, ry)
+        p.drawPixmap(0, 0, self._static_layer())
+        if self.duration:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            ry = self._ruler_y
+            p.setPen(QPen(QColor(Palette.ACCENT), 2))
+            p.drawLine(QPointF(self.MARGIN, ry), QPointF(self._x(self.position), ry))
+            self._paint_playhead(p, ry)
         p.end()
 
     def _paint_segments(self, p: QPainter, ry: float) -> None:

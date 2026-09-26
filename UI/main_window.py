@@ -494,7 +494,9 @@ class MainWindow(QMainWindow):
 
     def restart_app(self) -> None:
         """Start a fresh copy of GameCapture, then close this one (finishing any recording first)."""
-        QProcess.startDetached(sys.executable, sys.argv, os.getcwd())
+        # Built .exe: sys.executable *is* GameCapture.exe and argv[0] is its own path, not a script.
+        args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+        QProcess.startDetached(sys.executable, args, os.getcwd())
         self.quit_app()
 
     def quit_app(self) -> None:

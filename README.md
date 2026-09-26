@@ -47,6 +47,19 @@ python main.py live       # what League's live API reports right now (League onl
 ```
 Desktop shortcut: point it at `GameCapture.pyw` and set its icon to `Assets\app_icon.ico`.
 
+## Build an .exe
+```powershell
+build.bat                 # sets up .venv, downloads ffmpeg if needed, runs the tests, builds
+build.bat --skip-tests    # faster
+build.bat --zip           # also dist\GameCapture.zip, ready to share
+build.bat --clean         # wipe build\ and dist\ first
+```
+The result is `dist\GameCapture\`: **GameCapture.exe** (the app) and **GameCaptureCLI.exe** (console:
+`GameCaptureCLI.exe check`, `run`, `test`, `live`). Copy the whole folder - the .exe needs its
+`_internal\` folder. ffmpeg is bundled; a `Bin\ffmpeg.exe` placed next to GameCapture.exe overrides it.
+Settings stay in `%APPDATA%\GameCapture`, so rebuilding or moving the app never resets them.
+The build is described in `GameCapture.spec` (PyInstaller).
+
 ## Supported games
 
 | Game | How it's detected | Highlights |
