@@ -10,10 +10,9 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
                              QListView, QListWidget, QListWidgetItem, QMenu, QMessageBox, QProgressBar, QSlider,
                              QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
@@ -24,6 +23,7 @@ from Core.formatting import Format
 from Core.paths import Paths
 from Core.sidecar import Sidecar
 from Theme.palette import Palette
+from UI.dual_player import DualPlayer
 from UI.edit_timeline import EditTimeline
 from UI.frames import FrameCache
 from UI.icons import Icons
@@ -46,48 +46,46 @@ class _ExportSignals(QObject):
 
 
 class SequencePlayer(QObject):
-    """Plays the timeline clip after clip with one QMediaPlayer, switching source files as needed."""
+    """Plays the timeline clip after clip, switching source files as needed.
+
+    A few seconds before a clip ends, the next one is prepared in a hidden second player
+    (UI/dual_player.py) when it starts somewhere else - so cuts play without a hitch."""
     positionChanged = pyqtSignal(float)    # timeline seconds
     playingChanged = pyqtSignal(bool)
+    PRELOAD_S = 4.0                         # prepare the next clip this long before the cut
 
-    def __init__(self, video: QVideoWidget) -> None:
+    def __init__(self, allowed=lambda: True) -> None:
         super().__init__()
-        self.audio = QAudioOutput()
-        self.audio.setVolume(0.8)
-        self.player = QMediaPlayer()
-        self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(video)
+        self.dual = DualPlayer(allowed)
+        self.view = self.dual.view
         self.project: EditProject | None = None
         self.index = -1
-        self._source = ""
-        self._pending: float | None = None     # seek to apply once the new file is loaded
-        self._pending_t = 0.0                   # ...and the timeline time it stands for
         self._want_play = False
-        self.player.positionChanged.connect(self._on_position)
-        self.player.mediaStatusChanged.connect(self._on_status)
-        self.player.playbackStateChanged.connect(
+        self.dual.positionChanged.connect(self._on_position)
+        self.dual.mediaStatusChanged.connect(self._on_status)
+        self.dual.playbackStateChanged.connect(
             lambda s: self.playingChanged.emit(s == QMediaPlayer.PlaybackState.PlayingState))
 
     @property
     def playing(self) -> bool:
-        return self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        return self.dual.playbackState() == QMediaPlayer.PlaybackState.PlayingState
 
     def set_project(self, project: EditProject | None) -> None:
         self.project = project
         self.unload()
 
     def unload(self) -> None:
-        self.player.stop()
-        self.player.setSource(QUrl())
-        self._source, self.index, self._pending = "", -1, None
+        self.dual.unload()
+        self.index = -1
+
+    def holds(self, path: str) -> bool:
+        return self.index >= 0 and self.dual.path == path
 
     def position(self) -> float:
         if not self.project or not 0 <= self.index < len(self.project.clips):
             return 0.0
-        if self._pending is not None:  # still opening the file: report where we're going
-            return self._pending_t
         c = self.project.clips[self.index]
-        inside = min(max(self.player.position() / 1000 - c.start, 0.0), c.duration)
+        inside = min(max(self.dual.position() / 1000 - c.start, 0.0), c.duration)
         return self.project.clip_offset(self.index) + inside
 
     def seek(self, t: float) -> None:
@@ -97,68 +95,74 @@ class SequencePlayer(QObject):
             self.positionChanged.emit(0.0)
             return
         self.index, src_t = hit
-        self._show(self.project.clips[self.index].source, src_t, max(0.0, t))
+        self._show(self.project.clips[self.index].source, src_t)
         self.positionChanged.emit(max(0.0, t))
 
-    def _show(self, source: str, src_t: float, t: float) -> None:
-        if source != self._source:
-            self._source = source
-            self._pending, self._pending_t = src_t, t
-            self.player.setSource(QUrl.fromLocalFile(source))
+    def _show(self, source: str, src_t: float) -> None:
+        """Go to a spot: instant if it was prepared, else open / seek the file."""
+        if self.dual.take(source, src_t, play=self._want_play):
+            return
+        if source != self.dual.path:
+            self.dual.load(source, at=src_t)
         else:
-            self.player.setPosition(int(src_t * 1000))
+            self.dual.setPosition(int(src_t * 1000))
+        if self._want_play:
+            self.dual.play()
 
     def toggle(self) -> None:
         if self.playing:
-            self._want_play = False
-            self.player.pause()
+            self.pause()
             return
         if not self.project or not self.project.clips:
             return
         if self.index < 0 or self.position() >= self.project.duration - 0.05:
             self.seek(0.0)
         self._want_play = True
-        self.player.play()
+        self.dual.play()
 
     def pause(self) -> None:
         self._want_play = False
-        self.player.pause()
+        self.dual.pause()
+        self.dual.drop_standby()
 
     def _on_status(self, status) -> None:
-        if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia) \
-                and self._pending is not None:
-            if hasattr(self.player, "setActiveAudioTrack"):
-                self.player.setActiveAudioTrack(0)   # track 1 = the mix (files with separate tracks)
-            self.player.setPosition(int(self._pending * 1000))
-            self._pending = None
-            if self._want_play:
-                self.player.play()
-        elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._want_play:
+        if status == QMediaPlayer.MediaStatus.EndOfMedia and self._want_play:
             self._advance()
 
     def _on_position(self, ms: int) -> None:
-        if not self.project or not 0 <= self.index < len(self.project.clips) or self._pending is not None:
+        if not self.project or not 0 <= self.index < len(self.project.clips) or self.dual.loading:
             return
         c = self.project.clips[self.index]
-        if ms / 1000 >= c.end - 0.02 and self._want_play:
-            self._advance()
-            return
+        if self._want_play:
+            if ms / 1000 >= c.end - 0.02:
+                self._advance()
+                return
+            if c.end - ms / 1000 < self.PRELOAD_S:
+                self._prepare(self.index + 1)
         self.positionChanged.emit(self.position())
+
+    def _jumps(self, nxt: int) -> bool:
+        """Does clip `nxt` start somewhere other than where clip nxt-1 ends?"""
+        cur, c = self.project.clips[nxt - 1], self.project.clips[nxt]
+        return not (c.source == cur.source and abs(c.start - cur.end) < 0.05)
+
+    def _prepare(self, nxt: int) -> None:
+        if 0 < nxt < len(self.project.clips) and self._jumps(nxt):
+            c = self.project.clips[nxt]
+            self.dual.prepare(c.source, c.start)
 
     def _advance(self) -> None:
         nxt = self.index + 1
         if nxt >= len(self.project.clips):
             self._want_play = False
-            self.player.pause()
+            self.dual.pause()
             self.positionChanged.emit(self.project.duration)
             return
-        cur, c = self.project.clips[self.index], self.project.clips[nxt]
+        jumps = self._jumps(nxt)
         self.index = nxt
-        if c.source == cur.source and abs(c.start - cur.end) < 0.05:
-            return  # the next clip carries straight on in the same file
-        self._show(c.source, c.start, self.project.clip_offset(nxt))
-        if self._want_play:
-            self.player.play()
+        if jumps:
+            c = self.project.clips[nxt]
+            self._show(c.source, c.start)
 
 
 class EditorPage(QWidget):
@@ -175,6 +179,9 @@ class EditorPage(QWidget):
         self.sig = _ExportSignals()
         self._exporting = False
         self._loading = False
+        self._undo: list[dict] = []          # project snapshots before each edit
+        self._redo: list[dict] = []
+        self._drag_snapshot: dict | None = None
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.timeout.connect(self.save)
@@ -212,10 +219,9 @@ class EditorPage(QWidget):
         top.addWidget(self.export_btn)
 
         # preview + transport
-        self.video = QVideoWidget()
+        self.seq = SequencePlayer(allowed=self.win.preload_allowed)
+        self.video = self.seq.view
         self.video.setMinimumHeight(240)
-        self.video.setStyleSheet("background: #000;")
-        self.seq = SequencePlayer(self.video)
         self.play_btn = IconButton("play", "Play / pause (Space)", size=24, color=Palette.TEXT)
         self._play_icon = Icons.icon("play", Palette.TEXT, 24)
         self._pause_icon = Icons.icon("pause", Palette.TEXT, 24)
@@ -251,6 +257,10 @@ class EditorPage(QWidget):
         middle.addLayout(preview, 1)
 
         # timeline toolbar + timeline
+        self.undo_btn = IconButton("undo", "Undo (Ctrl+Z)", size=18)
+        self.redo_btn = IconButton("redo", "Redo (Ctrl+Y)", size=18)
+        self.hl_btn = IconButton("bolt", "Keep only the highlights of the selected clip - one clip each, "
+                                         "the parts in between are cut out (H)", size=18)
         self.split_btn = IconButton("scissors", "Split the clip at the playhead (S)", size=18)
         self.dup_btn = IconButton("copy", "Duplicate the selected clip (Ctrl+D)", size=18)
         self.del_btn = IconButton("trash", "Remove the selected clip from the timeline (Delete)", size=18)
@@ -261,7 +271,10 @@ class EditorPage(QWidget):
         tools = QHBoxLayout()
         tools.addWidget(self.clip_info)
         tools.addStretch()
-        for b in (self.split_btn, self.dup_btn, self.del_btn):
+        for b in (self.undo_btn, self.redo_btn):
+            tools.addWidget(b)
+        tools.addSpacing(14)
+        for b in (self.hl_btn, self.split_btn, self.dup_btn, self.del_btn):
             tools.addWidget(b)
         tools.addSpacing(10)
         tools.addWidget(self.total_label)
@@ -295,21 +308,25 @@ class EditorPage(QWidget):
         self.sources.setViewMode(QListView.ViewMode.ListMode)
         self.sources.setWordWrap(True)
         self.sources.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.sources.setToolTip("Double-click to add the whole video to the timeline")
+        self.sources.setToolTip("Double-click: add its highlights as clips (or the whole video if it has none)")
         import_btn = IconTextButton("plus", "Import videos")
         import_btn.clicked.connect(self.import_videos)
-        self.add_btn = IconTextButton("scissors", "Add to timeline")
-        self.add_btn.setToolTip("Add the selected video to the end of the timeline")
-        self.add_btn.clicked.connect(self._add_selected_source)
+        self.add_hl_btn = IconTextButton("bolt", "Highlights")
+        self.add_hl_btn.setToolTip("Each highlight of the selected video becomes its own clip on the timeline")
+        self.add_hl_btn.clicked.connect(lambda: self._add_selected_source(highlights=True))
+        self.add_btn = IconTextButton("reel", "Whole video")
+        self.add_btn.setToolTip("Add the selected video to the end of the timeline as one clip")
+        self.add_btn.clicked.connect(lambda: self._add_selected_source(highlights=False))
         buttons = QHBoxLayout()
-        buttons.addWidget(import_btn)
+        buttons.addWidget(self.add_hl_btn)
         buttons.addWidget(self.add_btn)
         videos = QWidget()
         vl = QVBoxLayout(videos)
         vl.setContentsMargins(0, 0, 0, 0)
         vl.addWidget(self.sources, 1)
+        vl.addWidget(import_btn)
         vl.addLayout(buttons)
-        hint = QLabel("Tip: in Sessions, tick highlights and press Edit to send them here.")
+        hint = QLabel("Double-click a video to put its highlights on the timeline. From Sessions: tick highlights, press Edit.")
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         vl.addWidget(hint)
@@ -355,18 +372,23 @@ class EditorPage(QWidget):
         self.name_edit.editingFinished.connect(self._rename)
         self.projects.activated.connect(self._on_project_picked)
         self.export_btn.clicked.connect(self.export)
-        self.sources.itemDoubleClicked.connect(lambda item: self.add_source_to_timeline(item.data(ROLE_PATH)))
+        self.sources.itemDoubleClicked.connect(lambda item: self.add_source_to_timeline(item.data(ROLE_PATH),
+                                                                                        highlights=True))
         self.sources.customContextMenuRequested.connect(self._source_menu)
         self.sources.currentItemChanged.connect(lambda *_: self._update_buttons())
         self.play_btn.clicked.connect(self.toggle_play)
         self.prev_btn.clicked.connect(lambda: self.jump_clip(-1))
         self.next_btn.clicked.connect(lambda: self.jump_clip(+1))
-        self.volume.valueChanged.connect(lambda v: self.seq.audio.setVolume(v / 100))
+        self.volume.valueChanged.connect(lambda v: self.seq.dual.set_volume(v / 100))
         self.seq.positionChanged.connect(self._on_position)
         self.seq.playingChanged.connect(lambda on: self.play_btn.setIcon(self._pause_icon if on else self._play_icon))
         self.timeline.seekRequested.connect(self.seek)
         self.timeline.selectionChanged.connect(lambda _: self._update_buttons())
-        self.timeline.edited.connect(self.changed)
+        self.timeline.editStarted.connect(self._begin_drag_edit)
+        self.timeline.edited.connect(self._end_drag_edit)
+        self.undo_btn.clicked.connect(self.undo)
+        self.redo_btn.clicked.connect(self.redo)
+        self.hl_btn.clicked.connect(self.keep_highlights)
         self.split_btn.clicked.connect(self.split)
         self.dup_btn.clicked.connect(self.duplicate)
         self.del_btn.clicked.connect(self.delete_clip)
@@ -384,11 +406,56 @@ class EditorPage(QWidget):
         projects = self.store.list()
         self.open_project(projects[0] if projects else EditProject(), save=False)
 
+    # ================================================================ undo / redo
+
+    HISTORY = 100
+
+    def checkpoint(self) -> None:
+        """Call before changing the project: remembers it for Undo."""
+        self._undo.append(self.project.to_dict())
+        del self._undo[:-self.HISTORY]
+        self._redo.clear()
+
+    def _begin_drag_edit(self) -> None:
+        self._drag_snapshot = self.project.to_dict()
+
+    def _end_drag_edit(self) -> None:
+        if self._drag_snapshot is not None:
+            self._undo.append(self._drag_snapshot)
+            del self._undo[:-self.HISTORY]
+            self._redo.clear()
+            self._drag_snapshot = None
+        self.changed()
+
+    def undo(self) -> None:
+        self._restore(self._undo, self._redo, "Undone")
+
+    def redo(self) -> None:
+        self._restore(self._redo, self._undo, "Redone")
+
+    def _restore(self, source: list[dict], target: list[dict], word: str) -> None:
+        if not source:
+            return
+        t = self.seq.position()
+        selected = self.selected
+        target.append(self.project.to_dict())
+        self.seq.pause()
+        self.project = EditProject.from_dict(source.pop())
+        self.seq.set_project(self.project)
+        self.timeline.set_project(self.project)
+        self.timeline.set_selected(min(selected, len(self.project.clips) - 1))
+        self._fill_sources()
+        self.changed()
+        self.seek(min(t, self.project.duration))
+        self.say(word)
+
     def open_project(self, project: EditProject, save: bool = True) -> None:
         if save:
             self.save()
         self.seq.pause()
         self.project = project
+        self._undo.clear()
+        self._redo.clear()
         self._loading = True
         self.name_edit.setText(project.name)
         ex = project.export
@@ -492,10 +559,12 @@ class EditorPage(QWidget):
     def import_videos(self) -> None:
         start = str(self.win.output_dir if self.win.output_dir.exists() else Path.home())
         paths, _ = QFileDialog.getOpenFileNames(self, "Import videos", start, VIDEO_FILTER)
+        if paths:
+            self.checkpoint()
         added = [p for p in (self.add_source(Path(p)) for p in paths) if p]
         if added:
-            self.say(f"Imported {len(added)} video{'s' if len(added) != 1 else ''} - double-click one to add it "
-                      "to the timeline")
+            self.say(f"Imported {len(added)} video{'s' if len(added) != 1 else ''} - double-click one to put "
+                     "its highlights on the timeline")
 
     def add_source(self, path: Path, label: str = "", markers: list[dict] | None = None) -> str | None:
         """Put a video in Project videos (no timeline change). Returns its path, or None if unreadable."""
@@ -518,22 +587,38 @@ class EditorPage(QWidget):
         self.changed()
         return str(path)
 
-    def add_source_to_timeline(self, path: str | None) -> None:
+    def add_source_to_timeline(self, path: str | None, highlights: bool = False) -> None:
+        """Whole video as one clip, or (highlights=True) each highlight as its own clip -
+        falling back to the whole video when it has no highlights."""
         src = self.project.source(path) if path else None
         if src is None:
             return
-        clip = self.project.add_clip(src.path, 0.0, src.duration, src.name)
-        if clip is not None:
-            self._after_timeline_add(len(self.project.clips) - 1)
+        self.checkpoint()
+        first = len(self.project.clips)
+        if highlights:
+            n = self.project.add_highlights(src.path, *self._padding())
+            if n:
+                self._after_timeline_add(first)
+                self.say(f"Added {n} highlight clip{'s' if n != 1 else ''} from {src.name}")
+                return
+        if self.project.add_clip(src.path, 0.0, src.duration, src.name) is not None:
+            self._after_timeline_add(first)
+        else:
+            self._undo.pop()
 
-    def _add_selected_source(self) -> None:
+    def _add_selected_source(self, highlights: bool) -> None:
         item = self.sources.currentItem()
         if item is not None:
-            self.add_source_to_timeline(item.data(ROLE_PATH))
+            self.add_source_to_timeline(item.data(ROLE_PATH), highlights=highlights)
+
+    def _padding(self) -> tuple[float, float]:
+        return self.cfg.clips.pre_seconds, self.cfg.clips.post_seconds
 
     def add_segments(self, entry: "RecordingEntry", segments: list["Segment"]) -> int:
         """From Sessions: the ticked highlights of a recording become clips at the end of the timeline."""
+        self.checkpoint()
         if self.add_source(entry.video, entry.title, entry.markers) is None:
+            self._undo.pop()
             return 0
         first = len(self.project.clips)
         for seg in segments:
@@ -580,7 +665,8 @@ class EditorPage(QWidget):
         if not path:
             return
         menu = QMenu(self)
-        menu.addAction("Add to timeline", lambda: self.add_source_to_timeline(path))
+        menu.addAction("Add highlights as clips", lambda: self.add_source_to_timeline(path, highlights=True))
+        menu.addAction("Add whole video", lambda: self.add_source_to_timeline(path))
         menu.addAction("Rename...", lambda: self._rename_source(path))
         menu.addAction("Show in folder", lambda: Shell.reveal(Path(path)))
         menu.addSeparator()
@@ -593,6 +679,7 @@ class EditorPage(QWidget):
             return
         name, ok = QInputDialog.getText(self, "Rename video", "Name in this project:", text=src.name)
         if ok and name.strip():
+            self.checkpoint()
             src.label = name.strip()
             self._fill_sources()
             self.changed()
@@ -604,6 +691,7 @@ class EditorPage(QWidget):
                                           f"{used} clip(s) on the timeline come from this video. Remove them too?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
+        self.checkpoint()
         self.seq.unload()
         self.project.remove_source(path)
         self.timeline.set_selected(-1)
@@ -620,15 +708,35 @@ class EditorPage(QWidget):
 
     def split(self) -> None:
         t = self.seq.position()
+        self.checkpoint()
         if self.project.split(t):
             hit = self.project.locate(t)
             self.timeline.set_selected(hit[0] if hit else -1)
             self.changed()
         else:
+            self._undo.pop()
             self.say("Move the playhead inside a clip (not right at its edge) to split it", ok=False)
+
+    def keep_highlights(self) -> None:
+        """Ripple edit: the selected clip becomes one clip per highlight; the rest is cut out."""
+        i = self.selected
+        if i < 0:
+            self.say("Select a clip first", ok=False)
+            return
+        self.checkpoint()
+        n = self.project.keep_highlights(i, *self._padding())
+        if not n:
+            self._undo.pop()
+            self.say("No highlights in this clip", ok=False)
+            return
+        self.timeline.set_selected(i)
+        self.changed()
+        self.seek(self.project.clip_offset(i))
+        self.say(f"Kept {n} highlight clip{'s' if n != 1 else ''} - Ctrl+Z to undo")
 
     def duplicate(self) -> None:
         if self.selected >= 0:
+            self.checkpoint()
             self.timeline.set_selected(self.project.duplicate(self.selected))
             self.changed()
 
@@ -637,6 +745,7 @@ class EditorPage(QWidget):
         if i < 0:
             return
         t = self.project.clip_offset(i)
+        self.checkpoint()
         self.seq.pause()
         self.project.delete(i)
         self.timeline.set_selected(min(i, len(self.project.clips) - 1))
@@ -685,11 +794,14 @@ class EditorPage(QWidget):
         has_clips = bool(self.project.clips)
         for b in (self.play_btn, self.prev_btn, self.next_btn, self.split_btn):
             b.setEnabled(has_clips)
-        for b in (self.dup_btn, self.del_btn):
+        for b in (self.dup_btn, self.del_btn, self.hl_btn):
             b.setEnabled(self.selected >= 0)
+        self.undo_btn.setEnabled(bool(self._undo))
+        self.redo_btn.setEnabled(bool(self._redo))
         self.export_btn.setEnabled(has_clips and not self._exporting)
         item = self.sources.currentItem()
-        self.add_btn.setEnabled(bool(item and item.data(ROLE_PATH)))
+        for b in (self.add_btn, self.add_hl_btn):
+            b.setEnabled(bool(item and item.data(ROLE_PATH)))
         self._update_labels()
 
     # ================================================================ export
@@ -745,13 +857,14 @@ class EditorPage(QWidget):
         if self.name_edit.hasFocus():
             return
         {"Space": self.toggle_play, "S": self.split, "Delete": self.delete_clip, "Ctrl+D": self.duplicate,
+         "H": self.keep_highlights, "Ctrl+Z": self.undo, "Ctrl+Y": self.redo, "Ctrl+Shift+Z": self.redo,
          "Left": lambda: self.seek(max(0.0, self.seq.position() - 5)),
          "Right": lambda: self.seek(min(self.project.duration, self.seq.position() + 5)),
          "N": lambda: self.jump_clip(+1), "P": lambda: self.jump_clip(-1)}.get(key, lambda: None)()
 
     def release_file(self, video: Path) -> None:
         """Before a recording is deleted: let go of it if the preview has it open."""
-        if self.seq._source == str(video):
+        if self.seq.holds(str(video)) or self.seq.dual.holds(str(video)):
             self.seq.unload()
 
     def shutdown(self) -> None:

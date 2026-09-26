@@ -34,7 +34,7 @@ class _ExportSignals(QObject):
 
 
 class SessionsPage(QWidget):
-    DEFAULT_TYPES = {"kill", "multikill", "objective", "ace", "first_blood", "bookmark"}  # pre-ticked for export
+    DEFAULT_TYPES = Segment.HIGHLIGHT_TYPES  # pre-ticked for export
 
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
@@ -101,6 +101,7 @@ class SessionsPage(QWidget):
 
         self.player = PlayerPanel()
         self.player.lead_seconds = self.cfg.clips.pre_seconds
+        self.player.allow_preload = self.win.preload_allowed
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.player)

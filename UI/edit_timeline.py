@@ -19,6 +19,7 @@ from UI.icons import Icons
 class EditTimeline(QWidget):
     seekRequested = pyqtSignal(float)     # timeline seconds
     selectionChanged = pyqtSignal(int)    # clip index, -1 = none
+    editStarted = pyqtSignal()            # a trim or move drag began (snapshot for Undo)
     edited = pyqtSignal()                 # clips were trimmed or moved
     MARGIN = 14
     GAP = 3          # px between clips
@@ -266,6 +267,7 @@ class EditTimeline(QWidget):
         clip = self.project.clips[i]
         self._drag = {"kind": {"start": "trim_start", "end": "trim_end"}.get(part, "move"), "index": i,
                       "x": pos.x(), "scale": self._scale(), "start": clip.start, "end": clip.end, "moved": False}
+        self.editStarted.emit()
         if part == "body":
             self.seekRequested.emit(self._t(pos.x()))
         self.update()

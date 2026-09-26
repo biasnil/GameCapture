@@ -21,6 +21,9 @@ class Segment:
     end: float
     label: str
 
+    # Your moments that count as highlights by default (Sessions pre-ticks these, the editor cuts them)
+    HIGHLIGHT_TYPES = frozenset({"kill", "multikill", "objective", "ace", "first_blood", "bookmark"})
+
     @property
     def duration(self) -> float:
         return self.end - self.start

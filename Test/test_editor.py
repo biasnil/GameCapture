@@ -73,6 +73,46 @@ class TimelineTests(unittest.TestCase):
         self.assertIsNone(p.add_clip("v0.mp4", 10, 12))   # nothing left
 
 
+class HighlightClipTests(unittest.TestCase):
+    def match(self) -> EditProject:
+        """A 120 s match: kills at 20 and 23 s (one moment), a death at 50 s, a bookmark at 90 s."""
+        p = EditProject()
+        p.add_source("m.mp4", 120, markers=[
+            {"type": "kill", "label": "Kill", "involves_me": True, "video_time": 20},
+            {"type": "multikill", "label": "Double kill", "involves_me": True, "video_time": 23},
+            {"type": "death", "label": "Died", "involves_me": True, "video_time": 50},
+            {"type": "kill", "label": "Their kill", "involves_me": False, "video_time": 60},
+            {"type": "bookmark", "label": "Bookmark 1", "involves_me": True, "video_time": 90},
+        ])
+        return p
+
+    def test_each_highlight_becomes_its_own_clip(self):
+        p = self.match()
+        self.assertEqual(p.add_highlights("m.mp4", pre=10, post=5), 2)
+        self.assertEqual([(c.start, c.end, c.label) for c in p.clips],
+                         [(10, 28, "Kill + Double kill"), (80, 95, "Bookmark 1")])
+
+    def test_keep_highlights_ripples_the_rest_up(self):
+        p = self.match()
+        p.add_clip("m.mp4", 0, 120, "whole match")
+        p.add_clip("m.mp4", 100, 110, "after")
+        self.assertEqual(p.keep_highlights(0, pre=10, post=5), 2)
+        self.assertEqual([c.label for c in p.clips], ["Kill + Double kill", "Bookmark 1", "after"])
+        self.assertEqual(p.clip_offset(2), 18 + 15)          # no gaps: the last clip moved up
+
+    def test_keep_highlights_stays_inside_the_clip(self):
+        p = self.match()
+        p.add_clip("m.mp4", 15, 92)                          # cuts through both highlight windows
+        self.assertEqual(p.keep_highlights(0, pre=10, post=5), 2)
+        self.assertEqual([(c.start, c.end) for c in p.clips], [(15, 28), (80, 92)])
+
+    def test_clip_without_highlights_is_left_alone(self):
+        p = self.match()
+        p.add_clip("m.mp4", 30, 70)
+        self.assertEqual(p.keep_highlights(0, pre=2, post=2), 0)
+        self.assertEqual([(c.start, c.end) for c in p.clips], [(30, 70)])
+
+
 class ProjectStoreTests(TempDirTest):
     def test_roundtrip_newest_first(self):
         store = ProjectStore(self.tmp / "Projects")

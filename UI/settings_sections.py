@@ -1087,6 +1087,11 @@ class AppSection(SettingsSection):
                                     lambda: g.minimize_to_tray, lambda on: setattr(g, "minimize_to_tray", on))
         self.start_min = self.toggle_row("Start minimised", "Open straight to the tray",
                                          lambda: g.start_minimized, lambda on: setattr(g, "start_minimized", on))
+        self.precache = self.toggle_row(
+            "Preload the next clip",
+            "Jumping to the next highlight or editor clip is instant instead of stuttering. Uses a second "
+            "video decoder (roughly 100-200 MB) while you watch; always paused while recording",
+            lambda: g.precache, lambda on: setattr(g, "precache", on))
         self.body.addWidget(self.label("Hotkeys"))
         for name, combo in (("Start / stop recording", hk.toggle), ("Bookmark a highlight", hk.bookmark),
                             ("Quit GameCapture", hk.quit)):
@@ -1121,4 +1126,5 @@ class AppSection(SettingsSection):
         self._loading = True
         self.tray.setChecked(self.cfg.gui.minimize_to_tray)
         self.start_min.setChecked(self.cfg.gui.start_minimized)
+        self.precache.setChecked(self.cfg.gui.precache)
         self._loading = False

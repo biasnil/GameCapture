@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from Capture.ffmpeg import FFmpeg
+from Core.clips import Segment
 from Core.formatting import Format
 
 log = logging.getLogger("gamecapture.editor")
@@ -137,6 +138,42 @@ class EditProject:
         clip = EditClip(str(source), start, end, label)
         self.clips.insert(len(self.clips) if index is None else index, clip)
         return clip
+
+    def highlight_windows(self, path: str, pre: float, post: float, start: float = 0.0,
+                          end: float | None = None) -> list[Segment]:
+        """Your highlights in a video (between start and end), padded and merged like Sessions does."""
+        src = self.source(str(path))
+        if src is None:
+            return []
+        end = src.duration if end is None else end
+        markers = [m for m in src.markers if m.get("involves_me") and m.get("type") in Segment.HIGHLIGHT_TYPES
+                   and start <= m.get("video_time", -1) < end]
+        out = []
+        for seg in Segment.from_markers(markers, pre, post, src.duration or None):
+            seg.start, seg.end = max(seg.start, start), min(seg.end, end)
+            if seg.duration >= MIN_CLIP:
+                out.append(seg)
+        return out
+
+    def add_highlights(self, path: str | Path, pre: float, post: float, index: int | None = None) -> int:
+        """Each highlight of a video becomes its own clip (at `index`, default the end). Returns how many."""
+        at = len(self.clips) if index is None else index
+        segs = self.highlight_windows(str(path), pre, post)
+        for k, seg in enumerate(segs):
+            self.clips.insert(at + k, EditClip(str(path), seg.start, seg.end, seg.label))
+        return len(segs)
+
+    def keep_highlights(self, index: int, pre: float, post: float) -> int:
+        """Ripple: replace a clip by just its highlights, one clip each - the parts in between go and
+        everything after moves up. Returns how many clips it became (0 = no highlights, nothing changed)."""
+        if not 0 <= index < len(self.clips):
+            return 0
+        c = self.clips[index]
+        segs = self.highlight_windows(c.source, pre, post, c.start, c.end)
+        if not segs:
+            return 0
+        self.clips[index:index + 1] = [EditClip(c.source, s.start, s.end, s.label) for s in segs]
+        return len(segs)
 
     def split(self, t: float) -> bool:
         """Cut the clip under timeline time t in two."""

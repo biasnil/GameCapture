@@ -213,7 +213,7 @@ class MainWindow(QMainWindow):
         p = self.sessions.player
         session_keys = {"Space": p.toggle_play, "Left": lambda: p.skip(-5), "Right": lambda: p.skip(5),
                         "N": lambda: p.jump_highlight(+1), "P": lambda: p.jump_highlight(-1)}
-        for key in (*session_keys, "S", "Delete", "Ctrl+D"):
+        for key in (*session_keys, "S", "Delete", "Ctrl+D", "H", "Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z"):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda k=key: self._shortcut(k, session_keys))
 
@@ -223,6 +223,13 @@ class MainWindow(QMainWindow):
             session_keys[key]()
         elif page is self.editor:
             self.editor.shortcut(key)
+
+    def preload_allowed(self) -> bool:
+        """Preparing the next clip in advance: on in Settings, window visible, and never while
+        recording (a second video decoder would compete with the game for the GPU)."""
+        rec = self.engine.recorder
+        return (self.cfg.gui.precache and self.isVisible() and not self.isMinimized()
+                and not (rec is not None and rec.is_recording))
 
     def open_in_editor(self, entry: RecordingEntry, segments) -> None:
         """Sessions > Edit: send the ticked highlights to the video editor."""

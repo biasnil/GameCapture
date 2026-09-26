@@ -142,6 +142,8 @@ If you stop a Session recording by hand, it stays stopped until you close the ga
 | Left / Right | -5 s / +5 s |
 | N / P | next / previous highlight (editor: next / previous clip) |
 | S | editor: split the clip at the playhead |
+| H | editor: keep only the highlights of the selected clip |
+| Ctrl+Z / Ctrl+Y | editor: undo / redo |
 | Delete | editor: remove the selected clip |
 | Ctrl+D | editor: duplicate the selected clip |
 | Ctrl+Alt+R | manual record (works in game) |
@@ -153,17 +155,29 @@ Outplayed-style editing, in the sidebar under **Video editor**:
 
 - **Project videos** (left): videos you imported (**Import videos**: any recording, clip or other
   `.mp4` / `.mkv` / `.mov` / `.webm`) or sent from Sessions with **Edit**. Double-click one (or
-  **Add to timeline**) to put the whole video on the timeline. Right-click to rename or remove it.
+  **Highlights**) to put each of its highlights on the timeline as its own clip (padding from
+  Settings > Clips); **Whole video** adds it as one clip. Right-click to rename or remove it.
 - **Timeline** (bottom): one filmstrip per clip with its highlight icons. Click to select and seek,
-  drag a clip to move it, drag its edges to trim it. **Split** (scissors / `S`) cuts the clip at the
-  playhead, **Duplicate** (`Ctrl+D`) and **Delete** do what they say. The preview plays the clips in
-  order, straight across cuts and files.
+  drag a clip to move it, drag its edges to trim it. The timeline is magnetic: deleting or trimming
+  a clip closes the gap (ripple), so there are never holes. **Keep highlights** (lightning / `H`)
+  turns the selected clip into one clip per highlight and cuts out everything in between.
+  **Split** (scissors / `S`) cuts the clip at the playhead, **Duplicate** (`Ctrl+D`) and **Delete** do
+  what they say, and **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) cover every edit. The preview plays the
+  clips in order, straight across cuts and files.
 - **Export settings**: resolution (same as the video, 1440p ... 480p - never upscaled), frame rate,
   quality and sound. **Export video** renders one `.mp4` into your clips folder, using the GPU encoder
   the recorder picked. Clips of different sizes are letterboxed; clips without sound get silence.
 - **Projects** are saved automatically as you edit (`Projects\` in the [settings folder](#settings-and-data)).
   Switch between them, start a **New project** or delete one from the top bar - editing never
   changes your original videos, and deleting a project keeps them.
+
+## Smooth jumps (preloading)
+Jumping to another spot in a video normally makes the player go back to the last full picture
+(keyframe) and decode forward from there, which shows as a short stutter. So while you watch, the
+**next** highlight (Sessions) or the next clip that starts somewhere else (editor) is prepared in a
+second, hidden player; Next highlight / the cut then just swaps players. It only runs while you're
+watching, with the window open, and never while recording (it would compete with the game for the
+GPU). Turn it off in Settings > App > **Preload the next clip** (it uses roughly 100-200 MB while on).
 
 ## Settings and data
 Settings live in your user profile, so updating, moving or re-downloading GameCapture never loses them:
