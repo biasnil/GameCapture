@@ -169,8 +169,9 @@ Outplayed-style editing, in the sidebar under **Video editor**:
   clips in order, straight across cuts and files.
 - **Zoom**: `Ctrl` + mouse wheel (or the magnifier buttons) zooms the timeline around the mouse, the
   wheel scrolls it; the ruler gets finer as you zoom and the view follows the playhead while playing.
-- **Elements** tab: add **Text** (titles, captions - white with an outline, any colour) or an
-  **Image** (logo, sticker; PNG transparency works). Drag it on the preview to move it, drag its
+- **Elements** tab: add **Text** (titles, captions - outlined, any colour, **any font installed in
+  Windows**, bold / italic) or an **Image** (logo, sticker; PNG transparency works). **Animated GIF,
+  WebP and APNG** play in the preview and in the export, looping for as long as they show. Drag it on the preview to move it, drag its
   corner to resize it; set size, opacity and when it shows (or **Fit to clip**). Elements sit on the
   thin track above the clips, where you drag them in time and trim their edges. They are burned
   into the export exactly as the preview shows them.

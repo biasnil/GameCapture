@@ -152,3 +152,66 @@ class HighlightFilterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(QApplication is None, "PyQt6 not installed")
+class FontAndAnimationTests(TempDirTest):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_font_style_is_saved_and_used(self):
+        from UI.elements import ElementRenderer
+        e = Element("text", text="Pentakill", font="DejaVu Serif", bold=False, italic=True)
+        again = EditProject.from_dict({**EditProject(elements=[e]).to_dict()}).elements[0]
+        self.assertEqual((again.font, again.bold, again.italic), ("DejaVu Serif", False, True))
+        font = ElementRenderer.font(e, 40)
+        self.assertEqual((font.family(), font.bold(), font.italic(), font.pixelSize()),
+                         ("DejaVu Serif", False, True, 40))
+        bold = ElementRenderer.image(Element("text", text="Pentakill", bold=True), 1280, 720)
+        thin = ElementRenderer.image(Element("text", text="Pentakill", bold=False), 1280, 720)
+        self.assertGreater(bold.width(), thin.width())
+
+    def make_gif(self) -> Path:
+        """1 s red then 1 s blue, looping."""
+        gif = self.tmp / "blink.gif"
+        subprocess.run([FF.exe, "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=red:size=40x40:rate=1:d=1",
+                        "-f", "lavfi", "-i", "color=blue:size=40x40:rate=1:d=1",
+                        "-filter_complex", "[0][1]concat=n=2:v=1,split[a][b];[a]palettegen[p];[b][p]paletteuse",
+                        "-loop", "0", str(gif)], check=True)
+        return gif
+
+    @unittest.skipUnless(FF, "ffmpeg not found")
+    def test_gif_frames_follow_time_and_loop(self):
+        from UI.elements import ElementRenderer
+        e = Element("image", path=str(self.make_gif()))
+        self.assertTrue(ElementRenderer.is_animated(e))
+        self.assertEqual(ElementRenderer.loop_ms(e), 2000)
+        self.assertEqual([ElementRenderer.frame_index(e, t) for t in (0.2, 1.2, 2.2, 3.5)], [0, 1, 0, 1])
+        self.assertFalse(ElementRenderer.is_animated(Element("image", path=str(self.tmp / "none.gif"))))
+
+    @unittest.skipUnless(FF, "ffmpeg not found")
+    def test_gif_animates_in_the_export(self):
+        from PyQt6.QtGui import QImage
+        from UI.elements import ElementRenderer
+        video = self.tmp / "black.mp4"
+        subprocess.run([FF.exe, "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=black:size=320x180:rate=10",
+                        "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video)], check=True)
+        p = EditProject()
+        p.add_source(video, 6)
+        p.add_clip(video, 0, 6)
+        p.add_element(Element("image", start=1, end=5, x=0.5, y=0.5, size=0.3, path=str(self.make_gif())))
+        folder = self.tmp / "el"
+        folder.mkdir()
+        overlays = ElementRenderer.overlays(p, 320, 180, folder, fps=10)
+        self.assertEqual((overlays[0].fps, len(list(folder.glob("element_00_*.png")))), (10, 20))
+        out = ProjectExporter(FF).export(p, self.tmp / "out.mp4", "x264", render_overlays=lambda w, h: overlays)
+        self.assertAlmostEqual(FF.duration(out), 6, delta=0.3)   # the endless loop doesn't make it longer
+        seen = []
+        for at in (0.5, 1.5, 2.5, 3.5, 5.5):   # before, red, blue, red again (looped), after
+            frame = self.tmp / f"f{at}.png"
+            FF.extract_frame(out, frame, at, width=320)
+            c = QImage(str(frame)).pixelColor(160, 90)
+            seen.append("red" if c.red() > 150 and c.blue() < 90 else "blue" if c.blue() > 150 and c.red() < 90
+                        else "none")
+        self.assertEqual(seen, ["none", "red", "blue", "red", "none"])

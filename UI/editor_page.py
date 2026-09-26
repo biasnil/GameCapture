@@ -874,7 +874,8 @@ class EditorPage(QWidget):
             folder = ElementRenderer.temp_folder()
             try:
                 path = exporter.export(project, out, encoder, report,
-                                       render_overlays=lambda w, h: ElementRenderer.overlays(project, w, h, folder))
+                                       render_overlays=lambda w, h: ElementRenderer.overlays(
+                                           project, w, h, folder, project.export.fps))
                 self.sig.done.emit(True, f"Saved {path.name}", path)
             except Exception as exc:
                 log.error("Editor export failed: %s", exc)

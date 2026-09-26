@@ -75,6 +75,9 @@ class Element:
     path: str = ""           # image file
     color: str = "#ffffff"
     opacity: float = 1.0
+    font: str = ""           # text: font family (any font installed in Windows; "" = the app's font)
+    bold: bool = True
+    italic: bool = False
     id: str = field(default_factory=_new_id)
 
     @property
@@ -91,12 +94,15 @@ class Element:
 
 @dataclass
 class Overlay:
-    """An element rendered to an image for export: where (pixels, top-left) and when."""
+    """An element rendered for export: where (pixels, top-left) and when.
+    `image` is one PNG, or for an animated image a numbered sequence (element_00_%04d.png) of one loop
+    at `fps`, which ffmpeg repeats for as long as the element shows."""
     image: str
     x: int
     y: int
     start: float
     end: float
+    fps: float = 0.0         # > 0: `image` is a looping frame sequence
 
 
 @dataclass
@@ -413,9 +419,15 @@ class ProjectExporter:
         # text / images on top, each only while it's on screen
         video = "[v]"
         for k, ov in enumerate(overlays):
-            args += ["-i", ov.image]
-            graph += (f";{video}[{len(clips) + k}:v]overlay=x={ov.x}:y={ov.y}:"
-                      f"enable='between(t,{ov.start:.3f},{ov.end:.3f})'[o{k}]")
+            src = f"[{len(clips) + k}:v]"
+            if ov.fps > 0:   # animated: loop the frames forever, starting when the element appears
+                args += ["-framerate", f"{ov.fps:g}", "-stream_loop", "-1", "-i", ov.image]
+                graph += f";{src}setpts=PTS-STARTPTS+{ov.start:.3f}/TB[e{k}]"
+                src = f"[e{k}]"
+            else:
+                args += ["-i", ov.image]
+            graph += (f";{video}{src}overlay=x={ov.x}:y={ov.y}:"
+                      f"enable='between(t,{ov.start:.3f},{ov.end:.3f})'{':shortest=1' if ov.fps > 0 else ''}[o{k}]")
             video = f"[o{k}]"
         if overlays:
             graph += f";{video}format=yuv420p[vout]"
@@ -424,6 +436,7 @@ class ProjectExporter:
         if want_audio:
             args += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
         args += [*FFmpeg.encoder(encoder).file_args(int(project.export.quality)),
+                 "-t", f"{sum(c.duration for c in clips):.3f}",   # looping animations never end on their own
                  "-map_chapters", "-1", "-movflags", "+faststart", str(out)]
         return args
 

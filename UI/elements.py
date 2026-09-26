@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (QColorDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QListWidget, QListWidgetItem, QPushButton, QSlider, QVBoxLayout, QWidget)
+from PyQt6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen
+from PyQt6.QtWidgets import (QColorDialog, QDoubleSpinBox, QFileDialog, QFontComboBox, QFormLayout, QHBoxLayout,
+                             QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSlider, QVBoxLayout,
+                             QWidget)
 
 from Core.editor import MIN_CLIP, EditProject, Element, Overlay
 from Core.formatting import Format
@@ -29,32 +30,88 @@ from UI.widgets import IconButton, IconTextButton, InfoTip
 if TYPE_CHECKING:
     from UI.editor_page import EditorPage
 
-IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;All files (*)"
+IMAGE_FILTER = "Images and animations (*.png *.apng *.jpg *.jpeg *.webp *.gif *.bmp);;All files (*)"
 
 
 # ======================================================================== rendering
 
 class ElementRenderer:
+    """Draws elements. Animated images (GIF, animated WebP / PNG) are decoded once into frames
+    with their delays; which frame shows depends on how long the element has been on screen."""
     _cache: dict[tuple, QImage] = {}
+    _anims: dict[str, list[tuple[QImage, int]]] = {}   # path -> [(frame, delay ms)]
+    MAX_FRAMES = 600
+    EXPORT_FPS = 30                                     # animated images are exported at up to this rate
+
+    # ---------- animated images ----------
 
     @classmethod
-    def image(cls, e: Element, frame_w: int, frame_h: int) -> QImage:
-        """The element drawn at its size for a frame_w x frame_h video (transparent background)."""
-        key = (e.kind, e.text, e.path, e.color, round(e.size, 4), round(e.opacity, 3), frame_w, frame_h)
+    def frames(cls, path: str) -> list[tuple[QImage, int]]:
+        """All frames of an image with their delays - one frame for a still image, [] if unreadable."""
+        if path not in cls._anims:
+            reader = QImageReader(path)
+            reader.setAutoTransform(True)
+            frames: list[tuple[QImage, int]] = []
+            while len(frames) < cls.MAX_FRAMES:
+                img = reader.read()
+                if img.isNull():
+                    break
+                delay = reader.nextImageDelay()
+                frames.append((img, delay if delay > 10 else 100))  # 0 / tiny delays: browsers use 100 ms
+                if not reader.supportsAnimation() or not reader.canRead():
+                    break
+            cls._anims[path] = frames
+        return cls._anims[path]
+
+    @classmethod
+    def is_animated(cls, e: Element) -> bool:
+        return e.kind == "image" and len(cls.frames(e.path)) > 1
+
+    @classmethod
+    def loop_ms(cls, e: Element) -> int:
+        return sum(d for _f, d in cls.frames(e.path)) or 1
+
+    @classmethod
+    def frame_index(cls, e: Element, t: float) -> int:
+        """Which frame is showing `t` seconds after the element appeared (the animation loops)."""
+        frames = cls.frames(e.path)
+        if len(frames) < 2:
+            return 0
+        ms = int(max(0.0, t) * 1000) % cls.loop_ms(e)
+        for i, (_img, delay) in enumerate(frames):
+            if ms < delay:
+                return i
+            ms -= delay
+        return len(frames) - 1
+
+    # ---------- drawing ----------
+
+    @classmethod
+    def image(cls, e: Element, frame_w: int, frame_h: int, t: float = 0.0) -> QImage:
+        """The element drawn at its size for a frame_w x frame_h video (transparent background).
+        t: seconds since the element appeared - picks the frame of an animated image."""
+        frame = cls.frame_index(e, t) if e.kind == "image" else 0
+        key = (e.kind, e.text, e.path, e.color, round(e.size, 4), round(e.opacity, 3), e.font, e.bold, e.italic,
+               frame, frame_w, frame_h)
         if key not in cls._cache:
-            if len(cls._cache) > 200:
+            if len(cls._cache) > 400:
                 cls._cache.clear()
-            cls._cache[key] = cls._text(e, frame_h) if e.kind == "text" else cls._picture(e, frame_w)
+            cls._cache[key] = cls._text(e, frame_h) if e.kind == "text" else cls._picture(e, frame_w, frame)
         return cls._cache[key]
 
     @staticmethod
-    def _text(e: Element, frame_h: int) -> QImage:
-        px = max(8, int(e.size * frame_h))
-        font = QFont()
+    def font(e: Element, px: int) -> QFont:
+        font = QFont(e.font) if e.font else QFont()
         font.setPixelSize(px)
-        font.setBold(True)
+        font.setBold(e.bold)
+        font.setItalic(e.italic)
+        return font
+
+    @classmethod
+    def _text(cls, e: Element, frame_h: int) -> QImage:
+        px = max(8, int(e.size * frame_h))
         path = QPainterPath()
-        path.addText(0, 0, font, e.text or "Text")
+        path.addText(0, 0, cls.font(e, px), e.text or "Text")
         box = path.boundingRect()
         outline = max(2.0, px * 0.09)
         pad = outline * 2 + px * 0.06
@@ -76,14 +133,15 @@ class ElementRenderer:
         p.end()
         return img
 
-    @staticmethod
-    def _picture(e: Element, frame_w: int) -> QImage:
-        src = QImage(e.path)
+    @classmethod
+    def _picture(cls, e: Element, frame_w: int, frame: int = 0) -> QImage:
+        frames = cls.frames(e.path)
         width = max(1, int(e.size * frame_w))
-        if src.isNull():   # missing file: a visible placeholder instead of nothing
+        if not frames:   # missing file: a visible placeholder instead of nothing
             img = QImage(width, max(1, width // 2), QImage.Format.Format_ARGB32_Premultiplied)
             img.fill(QColor(229, 72, 77, 150))
             return img
+        src = frames[min(frame, len(frames) - 1)][0]
         scaled = src.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
         img = QImage(scaled.size(), QImage.Format.Format_ARGB32_Premultiplied)
         img.fill(Qt.GlobalColor.transparent)
@@ -94,24 +152,33 @@ class ElementRenderer:
         return img
 
     @classmethod
-    def rect(cls, e: Element, video: QRectF) -> QRectF:
+    def rect(cls, e: Element, video: QRectF, t: float = 0.0) -> QRectF:
         """Where the element lands inside the displayed video rectangle."""
-        img = cls.image(e, max(1, int(video.width())), max(1, int(video.height())))
+        img = cls.image(e, max(1, int(video.width())), max(1, int(video.height())), t)
         cx, cy = video.left() + e.x * video.width(), video.top() + e.y * video.height()
         return QRectF(cx - img.width() / 2, cy - img.height() / 2, img.width(), img.height())
 
     @classmethod
-    def overlays(cls, project: EditProject, width: int, height: int, folder: Path) -> list[Overlay]:
-        """Every element as a PNG at the export size, for ProjectExporter (safe in a worker thread)."""
+    def overlays(cls, project: EditProject, width: int, height: int, folder: Path,
+                 fps: float = 30) -> list[Overlay]:
+        """Every element as PNG(s) at the export size, for ProjectExporter (safe in a worker thread).
+        An animated image becomes one loop of frames sampled at up to EXPORT_FPS."""
         out = []
         for i, e in enumerate(project.elements):
             if e.duration <= 0:
                 continue
-            img = cls.image(e, width, height)
-            png = folder / f"element_{i:02d}.png"
-            img.save(str(png), "PNG")
-            out.append(Overlay(str(png), int(e.x * width - img.width() / 2), int(e.y * height - img.height() / 2),
-                               e.start, e.end))
+            first = cls.image(e, width, height)
+            x, y = int(e.x * width - first.width() / 2), int(e.y * height - first.height() / 2)
+            if cls.is_animated(e):
+                rate = min(float(fps or cls.EXPORT_FPS), cls.EXPORT_FPS)
+                count = max(1, round(cls.loop_ms(e) / 1000 * rate))
+                for n in range(count):
+                    cls.image(e, width, height, n / rate).save(str(folder / f"element_{i:02d}_{n:04d}.png"), "PNG")
+                out.append(Overlay(str(folder / f"element_{i:02d}_%04d.png"), x, y, e.start, e.end, rate))
+            else:
+                png = folder / f"element_{i:02d}.png"
+                first.save(str(png), "PNG")
+                out.append(Overlay(str(png), x, y, e.start, e.end))
         return out
 
     @staticmethod
@@ -154,8 +221,11 @@ class ElementOverlay(QWidget):
             return
         before = {e.id for e in self.project.elements_at(self.position)}
         self.position = t
-        if before != {e.id for e in self.project.elements_at(t)}:
+        now = self.project.elements_at(t)
+        if before != {e.id for e in now}:
             self.refresh()
+        elif any(ElementRenderer.is_animated(e) for e in now):
+            self.update()    # next frame of a GIF / animated WebP
 
     def select(self, element_id: str) -> None:
         self.current = element_id
@@ -198,10 +268,11 @@ class ElementOverlay(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         video = self.video_rect()
         for e in self._visible():
-            r = ElementRenderer.rect(e, video)
+            t = self.position - e.start
+            r = ElementRenderer.rect(e, video, t)
             if not e.visible_at(self.position):
                 p.setOpacity(0.35)
-            p.drawImage(r.topLeft(), ElementRenderer.image(e, int(video.width()), int(video.height())))
+            p.drawImage(r.topLeft(), ElementRenderer.image(e, int(video.width()), int(video.height()), t))
             p.setOpacity(1.0)
             if e.id == self.current:
                 p.setPen(QPen(QColor(Palette.ACCENT), 1.5, Qt.PenStyle.DashLine))
@@ -220,7 +291,7 @@ class ElementOverlay(QWidget):
     def _hit(self, pos: QPointF) -> tuple[Element | None, str]:
         video = self.video_rect()
         for e in reversed(self._visible()):     # topmost first
-            r = ElementRenderer.rect(e, video)
+            r = ElementRenderer.rect(e, video, self.position - e.start)
             if e.id == self.current and self._handle(r).adjusted(-4, -4, 4, 4).contains(pos):
                 return e, "resize"
             if r.contains(pos):
@@ -302,6 +373,14 @@ class ElementsPanel(QWidget):
         self.text = QLineEdit()
         self.text.setPlaceholderText("Your text")
         self.text.textEdited.connect(lambda t: self._set("text", t))
+        self.font_box = QFontComboBox()      # every font installed in Windows, shown in its own style
+        self.font_box.setEditable(True)       # type to search
+        self.font_box.setMaxVisibleItems(16)
+        self.font_box.currentFontChanged.connect(lambda f: self._set("font", f.family()))
+        self.bold = self._toggle("B", "Bold", "font-weight: 700;")
+        self.bold.toggled.connect(lambda on: self._set("bold", on))
+        self.italic = self._toggle("I", "Italic", "font-style: italic;")
+        self.italic.toggled.connect(lambda on: self._set("italic", on))
         self.color = QPushButton()
         self.color.setFixedWidth(60)
         self.color.clicked.connect(self._pick_color)
@@ -327,8 +406,21 @@ class ElementsPanel(QWidget):
         form = QFormLayout()
         self.text_row = QLabel("Text")
         form.addRow(self.text_row, self.text)
-        self.color_row = QLabel("Colour")
-        form.addRow(self.color_row, self.color)
+        self.font_row = QLabel("Font")
+        form.addRow(self.font_row, self.font_box)
+        style = QHBoxLayout()
+        style.setSpacing(4)
+        for w in (self.color, self.bold, self.italic):
+            style.addWidget(w)
+        style.addStretch()
+        self.style_box = QWidget()
+        self.style_box.setLayout(style)
+        style.setContentsMargins(0, 0, 0, 0)
+        self.color_row = QLabel("Style")
+        form.addRow(self.color_row, self.style_box)
+        self.anim_note = QLabel()
+        self.anim_note.setObjectName("Muted")
+        form.addRow("", self.anim_note)
         form.addRow("Size", self.size)
         form.addRow("Opacity", self.opacity)
         form.addRow("Shows", times)
@@ -348,6 +440,16 @@ class ElementsPanel(QWidget):
         layout.addWidget(self.list, 1)
         layout.addWidget(self.props)
         self.refresh()
+
+    @staticmethod
+    def _toggle(text: str, tip: str, css: str) -> QPushButton:
+        b = QPushButton(text)
+        b.setCheckable(True)
+        b.setFixedSize(30, 26)
+        b.setToolTip(tip)
+        b.setStyleSheet(f"QPushButton {{ {css} padding: 0; font-size: 14px; }} QPushButton:checked {{ background: #1f2a2e; "
+                        f"border: 1px solid {Palette.ACCENT}; color: {Palette.ACCENT}; }}")
+        return b
 
     @staticmethod
     def _seconds() -> QDoubleSpinBox:
@@ -388,8 +490,17 @@ class ElementsPanel(QWidget):
         self.props.setVisible(e is not None)
         if e is not None:
             is_text = e.kind == "text"
-            for w in (self.text, self.text_row, self.color, self.color_row):
+            for w in (self.text, self.text_row, self.font_box, self.font_row, self.style_box, self.color_row):
                 w.setVisible(is_text)
+            if is_text:
+                self.font_box.setCurrentFont(QFont(e.font) if e.font else QFont())
+                self.bold.setChecked(e.bold)
+                self.italic.setChecked(e.italic)
+            animated = ElementRenderer.is_animated(e)
+            self.anim_note.setVisible(animated)
+            if animated:
+                frames = ElementRenderer.frames(e.path)
+                self.anim_note.setText(f"Animated · {len(frames)} frames · {ElementRenderer.loop_ms(e) / 1000:.1f} s loop")
             if self.text.text() != e.text:
                 self.text.setText(e.text)
             self.color.setStyleSheet(f"background: {e.color}; border: 1px solid {Palette.BORDER};")
