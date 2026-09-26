@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from Capture.ffmpeg import FFmpeg
+from Core.clips import Segment
 from Core.formatting import Format
 
 log = logging.getLogger("gamecapture.editor")
@@ -40,6 +41,7 @@ class SourceVideo:
     duration: float
     label: str = ""
     markers: list[dict] = field(default_factory=list)   # highlights in source time (from the sidecar)
+    cuts: list[float] = field(default_factory=list)     # Highlights-mode videos: where the footage jumps
 
     @property
     def name(self) -> str:
@@ -60,6 +62,50 @@ class EditClip:
 
 
 @dataclass
+class Element:
+    """Text or an image shown on top of the video from `start` to `end` (timeline seconds).
+    Position and size are fractions of the frame, so they look the same at any export size."""
+    kind: str = "text"       # text | image
+    start: float = 0.0
+    end: float = 3.0
+    x: float = 0.5           # centre, 0 = left edge, 1 = right edge
+    y: float = 0.15          # centre, 0 = top, 1 = bottom
+    size: float = 0.08       # text: letter height / image: width - as a fraction of the frame
+    text: str = ""
+    path: str = ""           # image file
+    color: str = "#ffffff"
+    opacity: float = 1.0
+    font: str = ""           # text: font family (any font installed in Windows; "" = the app's font)
+    bold: bool = True
+    italic: bool = False
+    id: str = field(default_factory=_new_id)
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+    @property
+    def name(self) -> str:
+        return self.text.strip() or "Text" if self.kind == "text" else Path(self.path).name or "Image"
+
+    def visible_at(self, t: float) -> bool:
+        return self.start <= t < self.end
+
+
+@dataclass
+class Overlay:
+    """An element rendered for export: where (pixels, top-left) and when.
+    `image` is one PNG, or for an animated image a numbered sequence (element_00_%04d.png) of one loop
+    at `fps`, which ffmpeg repeats for as long as the element shows."""
+    image: str
+    x: int
+    y: int
+    start: float
+    end: float
+    fps: float = 0.0         # > 0: `image` is a looping frame sequence
+
+
+@dataclass
 class ExportSettings:
     resolution: str = "source"   # source (first clip's size) | 1440p | 1080p | 720p | 480p
     fps: int = 60
@@ -75,6 +121,7 @@ class EditProject:
     sources: list[SourceVideo] = field(default_factory=list)
     clips: list[EditClip] = field(default_factory=list)
     export: ExportSettings = field(default_factory=ExportSettings)
+    elements: list[Element] = field(default_factory=list)   # text / images on top, in drawing order
     id: str = field(default_factory=_new_id)
     updated: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
@@ -113,12 +160,12 @@ class EditProject:
     # ---------- editing ----------
 
     def add_source(self, path: str | Path, duration: float, label: str = "",
-                   markers: list[dict] | None = None) -> SourceVideo:
+                   markers: list[dict] | None = None, cuts: list[float] | None = None) -> SourceVideo:
         path = str(path)
         existing = self.source(path)
         if existing is not None:
             return existing
-        src = SourceVideo(path, float(duration), label, list(markers or []))
+        src = SourceVideo(path, float(duration), label, list(markers or []), list(cuts or []))
         self.sources.append(src)
         return src
 
@@ -137,6 +184,42 @@ class EditProject:
         clip = EditClip(str(source), start, end, label)
         self.clips.insert(len(self.clips) if index is None else index, clip)
         return clip
+
+    def highlight_windows(self, path: str, pre: float, post: float, start: float = 0.0,
+                          end: float | None = None) -> list[Segment]:
+        """Your highlights in a video (between start and end): one padded window per moment."""
+        src = self.source(str(path))
+        if src is None:
+            return []
+        end = src.duration if end is None else end
+        markers = [m for m in src.markers if m.get("involves_me") and m.get("type") in Segment.HIGHLIGHT_TYPES
+                   and start <= m.get("video_time", -1) < end]
+        out = []
+        for seg in Segment.per_moment(markers, pre, post, src.duration or None, src.cuts):
+            seg.start, seg.end = max(seg.start, start), min(seg.end, end)
+            if seg.duration >= MIN_CLIP:
+                out.append(seg)
+        return out
+
+    def add_highlights(self, path: str | Path, pre: float, post: float, index: int | None = None) -> int:
+        """Each highlight of a video becomes its own clip (at `index`, default the end). Returns how many."""
+        at = len(self.clips) if index is None else index
+        segs = self.highlight_windows(str(path), pre, post)
+        for k, seg in enumerate(segs):
+            self.clips.insert(at + k, EditClip(str(path), seg.start, seg.end, seg.label))
+        return len(segs)
+
+    def keep_highlights(self, index: int, pre: float, post: float) -> int:
+        """Ripple: replace a clip by just its highlights, one clip each - the parts in between go and
+        everything after moves up. Returns how many clips it became (0 = no highlights, nothing changed)."""
+        if not 0 <= index < len(self.clips):
+            return 0
+        c = self.clips[index]
+        segs = self.highlight_windows(c.source, pre, post, c.start, c.end)
+        if not segs:
+            return 0
+        self.clips[index:index + 1] = [EditClip(c.source, s.start, s.end, s.label) for s in segs]
+        return len(segs)
 
     def split(self, t: float) -> bool:
         """Cut the clip under timeline time t in two."""
@@ -185,6 +268,32 @@ class EditProject:
 
     # ---------- files ----------
 
+    # ---------- elements ----------
+
+    def add_element(self, element: Element) -> Element:
+        element.end = max(element.end, element.start + MIN_CLIP)
+        self.elements.append(element)
+        return element
+
+    def element(self, element_id: str) -> Element | None:
+        return next((e for e in self.elements if e.id == element_id), None)
+
+    def remove_element(self, element_id: str) -> None:
+        self.elements = [e for e in self.elements if e.id != element_id]
+
+    def elements_at(self, t: float) -> list[Element]:
+        return [e for e in self.elements if e.visible_at(t)]
+
+    def move_element(self, element_id: str, start: float | None = None, end: float | None = None) -> None:
+        """Change when an element shows (never shorter than MIN_CLIP, never before 0)."""
+        e = self.element(element_id)
+        if e is None:
+            return
+        if start is not None:
+            e.start = min(max(0.0, start), e.end - MIN_CLIP)
+        if end is not None:
+            e.end = max(end, e.start + MIN_CLIP)
+
     def to_dict(self) -> dict:
         data = asdict(self)
         data["schema"] = self.SCHEMA
@@ -195,11 +304,14 @@ class EditProject:
         export_fields = ExportSettings.__dataclass_fields__
         project = cls(
             name=data.get("name") or "Untitled project",
-            sources=[SourceVideo(s["path"], float(s.get("duration", 0)), s.get("label", ""), s.get("markers", []))
+            sources=[SourceVideo(s["path"], float(s.get("duration", 0)), s.get("label", ""), s.get("markers", []),
+                                 s.get("cuts", []))
                      for s in data.get("sources", []) if s.get("path")],
             clips=[EditClip(c["source"], float(c["start"]), float(c["end"]), c.get("label", ""),
                             c.get("id") or _new_id()) for c in data.get("clips", []) if c.get("source")],
             export=ExportSettings(**{k: v for k, v in (data.get("export") or {}).items() if k in export_fields}),
+            elements=[Element(**{k: v for k, v in e.items() if k in Element.__dataclass_fields__})
+                      for e in data.get("elements", []) if isinstance(e, dict)],
             id=data.get("id") or _new_id(),
             updated=data.get("updated") or datetime.now().isoformat(timespec="seconds"),
         )
@@ -279,7 +391,7 @@ class ProjectExporter:
         return w - w % 2, h - h % 2
 
     def build_args(self, project: EditProject, out: Path, encoder: str,
-                   probes: dict[str, dict]) -> list[str]:
+                   probes: dict[str, dict], overlays: list[Overlay] = ()) -> list[str]:
         clips = [c for c in project.clips if c.duration > 0]
         if not clips:
             raise ValueError("The timeline is empty")
@@ -304,15 +416,34 @@ class ProjectExporter:
             pads.append(pad)
         graph = ";".join(chains) + ";" + "".join(pads) + \
             f"concat=n={len(clips)}:v=1:a={int(want_audio)}[v]" + ("[a]" if want_audio else "")
-        args += ["-filter_complex", graph, "-map", "[v]"]
+        # text / images on top, each only while it's on screen
+        video = "[v]"
+        for k, ov in enumerate(overlays):
+            src = f"[{len(clips) + k}:v]"
+            if ov.fps > 0:   # animated: loop the frames forever, starting when the element appears
+                args += ["-framerate", f"{ov.fps:g}", "-stream_loop", "-1", "-i", ov.image]
+                graph += f";{src}setpts=PTS-STARTPTS+{ov.start:.3f}/TB[e{k}]"
+                src = f"[e{k}]"
+            else:
+                args += ["-i", ov.image]
+            graph += (f";{video}{src}overlay=x={ov.x}:y={ov.y}:"
+                      f"enable='between(t,{ov.start:.3f},{ov.end:.3f})'{':shortest=1' if ov.fps > 0 else ''}[o{k}]")
+            video = f"[o{k}]"
+        if overlays:
+            graph += f";{video}format=yuv420p[vout]"
+            video = "[vout]"
+        args += ["-filter_complex", graph, "-map", video]
         if want_audio:
             args += ["-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
         args += [*FFmpeg.encoder(encoder).file_args(int(project.export.quality)),
+                 "-t", f"{sum(c.duration for c in clips):.3f}",   # looping animations never end on their own
                  "-map_chapters", "-1", "-movflags", "+faststart", str(out)]
         return args
 
     def export(self, project: EditProject, out: Path, encoder: str = "x264",
-               progress: Progress | None = None) -> Path:
+               progress: Progress | None = None,
+               render_overlays: Callable[[int, int], list[Overlay]] | None = None) -> Path:
+        """render_overlays(width, height) -> the project's elements drawn as images at the export size."""
         missing = project.missing_sources()
         used = {c.source for c in project.clips}
         if any(m in used for m in missing):
@@ -321,7 +452,8 @@ class ProjectExporter:
         if progress:
             progress(0.0, "Preparing...")
         probes = {src: self.probe(Path(src)) for src in used}
-        args = self.build_args(project, out, encoder, probes)
+        overlays = render_overlays(*self.output_size(project, probes)) if render_overlays and project.elements else []
+        args = self.build_args(project, out, encoder, probes, overlays)
         total_us = project.duration * 1_000_000
         with self.ffmpeg.popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                encoding="utf-8", errors="replace") as proc:

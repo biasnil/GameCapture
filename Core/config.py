@@ -85,6 +85,8 @@ class GuiSettings:
     start_minimized: bool = False
     notify_start: bool = True        # tray notification when a recording starts
     notify_saved: bool = True        # tray notification when a recording is saved
+    precache: bool = True            # preload the next highlight / editor clip so jumps don't stutter
+                                     # (never while recording, so it can't cost in-game FPS)
 
 
 @dataclass

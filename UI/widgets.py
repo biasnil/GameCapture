@@ -1,11 +1,11 @@
 """Small reusable widgets."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtCore import QPointF
 from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QLabel, QPushButton,
-                             QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QLabel, QLayout, QPushButton,
+                             QSizePolicy, QToolButton, QToolTip, QVBoxLayout, QWidget)
 
 from Theme.palette import Palette
 from UI.icons import Icons  # noqa: E402
@@ -228,8 +228,38 @@ class SectionHeader(QWidget):
         col.addWidget(s)
 
 
+class InfoTip(QLabel):
+    """Small (i) icon: the explanation shows when you hover or click it, instead of a paragraph of text."""
+
+    def __init__(self, text: str, size: int = 15) -> None:
+        super().__init__()
+        self._text = text
+        self.setPixmap(Icons.pixmap("info", Palette.TEXT_MUTED, size))
+        self.setFixedSize(size + 4, size + 4)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setStyleSheet("background: transparent;")
+        self.setToolTip(self._html())
+
+    def _html(self) -> str:
+        return f"<div style='max-width: 320px'>{self._text}</div>"
+
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self.setToolTip(self._html())
+
+    def enterEvent(self, event) -> None:      # show at once, no hover delay
+        QToolTip.showText(self.mapToGlobal(self.rect().bottomLeft()), self._html(), self)
+        super().enterEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        QToolTip.showText(self.mapToGlobal(self.rect().bottomLeft()), self._html(), self)
+
+
 class SettingRow(QWidget):
-    """Label (+ optional hint) on the left, control on the right - one line of a settings form."""
+    """Label on the left, control on the right - one line of a settings form.
+    A short hint shows under the label; a longer explanation goes behind an (i) icon."""
+    SHORT_HINT = 48
 
     def __init__(self, label: str, control: QWidget, hint: str = "") -> None:
         super().__init__()
@@ -237,11 +267,16 @@ class SettingRow(QWidget):
         row.setContentsMargins(0, 4, 0, 4)
         text = QVBoxLayout()
         text.setSpacing(0)
-        text.addWidget(QLabel(label))
-        if hint:
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        head.addWidget(QLabel(label))
+        if hint and len(hint) > self.SHORT_HINT:
+            head.addWidget(InfoTip(hint))
+        head.addStretch()
+        text.addLayout(head)
+        if hint and len(hint) <= self.SHORT_HINT:
             h = QLabel(hint)
             h.setObjectName("Muted")
-            h.setWordWrap(True)
             text.addWidget(h)
         row.addLayout(text, 1)
         row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -310,3 +345,78 @@ class LegendItem(QWidget):
 
     def set_value(self, value: str) -> None:
         self.text.setText(f"{self._name}  <span style='color:{Palette.TEXT_MUTED}'>{value}</span>")
+
+
+class FlowLayout(QLayout):
+    """Lays widgets out left to right and wraps onto the next line (like words in a paragraph)."""
+
+    def __init__(self, parent=None, spacing: int = 6) -> None:
+        super().__init__(parent)
+        self._items = []
+        self._spacing = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, i: int):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i: int):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._arrange(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect) -> None:
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def sizeHint(self) -> QSize:
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def _arrange(self, rect, apply: bool) -> int:
+        x, y, line = rect.x(), rect.y(), 0
+        for item in self._items:
+            hint = item.sizeHint()
+            if x + hint.width() > rect.right() and line > 0:
+                x, y, line = rect.x(), y + line + self._spacing, 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._spacing
+            line = max(line, hint.height())
+        return y + line - rect.y()
+
+
+class FilterChip(QPushButton):
+    """Rounded on/off pill with an icon and a count - e.g. the highlight type filters."""
+    soloRequested = pyqtSignal()   # double-click: show only this one
+
+    def __init__(self, icon, text: str, tip: str = "") -> None:
+        super().__init__(text)
+        self.setObjectName("Chip")
+        self.setCheckable(True)
+        self.setChecked(True)
+        self.setIcon(icon)
+        self.setIconSize(QSize(14, 14))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if tip:
+            self.setToolTip(tip)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.soloRequested.emit()

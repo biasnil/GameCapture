@@ -19,6 +19,7 @@ from Core.engine import Engine
 from Core.formatting import Format
 from Core.library import RecordingEntry, RecordingLibrary
 from Core.storage import StorageManager
+from Core.version import AppInfo
 from Theme.palette import Palette
 from UI.clips_page import ClipsPage
 from UI.editor_page import EditorPage
@@ -59,7 +60,7 @@ class MainWindow(QMainWindow):
         self._was_capturing = False
         self._notify_saved_pending = False
 
-        self.setWindowTitle("GameCapture")
+        self.setWindowTitle(AppInfo.title())
         self.setWindowIcon(Icons.app_icon())
         self.resize(1360, 860)
         self._build_ui()
@@ -213,7 +214,7 @@ class MainWindow(QMainWindow):
         p = self.sessions.player
         session_keys = {"Space": p.toggle_play, "Left": lambda: p.skip(-5), "Right": lambda: p.skip(5),
                         "N": lambda: p.jump_highlight(+1), "P": lambda: p.jump_highlight(-1)}
-        for key in (*session_keys, "S", "Delete", "Ctrl+D"):
+        for key in (*session_keys, "S", "Delete", "Ctrl+D", "H", "Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z"):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(lambda k=key: self._shortcut(k, session_keys))
 
@@ -223,6 +224,13 @@ class MainWindow(QMainWindow):
             session_keys[key]()
         elif page is self.editor:
             self.editor.shortcut(key)
+
+    def preload_allowed(self) -> bool:
+        """Preparing the next clip in advance: on in Settings, window visible, and never while
+        recording (a second video decoder would compete with the game for the GPU)."""
+        rec = self.engine.recorder
+        return (self.cfg.gui.precache and self.isVisible() and not self.isMinimized()
+                and not (rec is not None and rec.is_recording))
 
     def open_in_editor(self, entry: RecordingEntry, segments) -> None:
         """Sessions > Edit: send the ticked highlights to the video editor."""
@@ -494,7 +502,9 @@ class MainWindow(QMainWindow):
 
     def restart_app(self) -> None:
         """Start a fresh copy of GameCapture, then close this one (finishing any recording first)."""
-        QProcess.startDetached(sys.executable, sys.argv, os.getcwd())
+        # Built .exe: sys.executable *is* GameCapture.exe and argv[0] is its own path, not a script.
+        args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+        QProcess.startDetached(sys.executable, args, os.getcwd())
         self.quit_app()
 
     def quit_app(self) -> None:

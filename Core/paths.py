@@ -28,11 +28,19 @@ def _data_dir() -> Path:
     return Path(base).expanduser() / "GameCapture"
 
 
+def _bin_dir(app_dir: Path, bundle: Path) -> Path:
+    """Bin\\ next to GameCapture.exe wins (so ffmpeg can be swapped), else the one bundled inside."""
+    beside = app_dir / "Bin"
+    return beside if (beside / "ffmpeg.exe").exists() or not (bundle / "Bin").exists() else bundle / "Bin"
+
+
 class Paths:
-    ROOT = Path(__file__).resolve().parent.parent
+    FROZEN = bool(getattr(sys, "frozen", False))              # running as the built GameCapture.exe
+    ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))  # bundled files
+    APP_DIR = Path(sys.executable).resolve().parent if FROZEN else ROOT              # where the .exe is
     ASSETS = ROOT / "Assets"
-    BIN = ROOT / "Bin"
-    LEGACY_CONFIG = ROOT / "config.json"   # before settings moved to the user profile
+    BIN = _bin_dir(APP_DIR, ROOT) if FROZEN else ROOT / "Bin"
+    LEGACY_CONFIG = APP_DIR / "config.json"   # before settings moved to the user profile
     DATA = _data_dir()
     CONFIG = DATA / "config.json"
     PROJECTS = DATA / "Projects"          # video editor projects

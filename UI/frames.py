@@ -24,6 +24,7 @@ class FrameCache(QObject):
         self._pending: set[tuple[str, float]] = set()
         self._failed: set[tuple[str, float]] = set()
         self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="frames")
+        self.generation = 0    # bumped whenever a frame finishes, so painters know to redraw
 
     def _jpg(self, video: str, t: float) -> Path:
         digest = hashlib.sha1(video.encode("utf-8")).hexdigest()[:12]
@@ -52,6 +53,7 @@ class FrameCache(QObject):
                 self._failed.add(key)
         finally:
             self._pending.discard(key)
+            self.generation += 1
             self.ready.emit()
 
     def shutdown(self) -> None:

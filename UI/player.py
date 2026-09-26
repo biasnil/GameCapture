@@ -1,15 +1,18 @@
-"""Video player: Qt Multimedia playback + the highlight timeline + transport controls."""
+"""Video player: Qt Multimedia playback + the highlight timeline + transport controls.
+
+While a highlight plays, the next one is prepared in a second, hidden player (UI/dual_player.py),
+so Next highlight is instant instead of stuttering while the video decoder catches up."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QUrl
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtMultimedia import QMediaPlayer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
 from Core.formatting import Format
 from Theme.palette import Palette
+from UI.dual_player import DualPlayer
 from UI.icons import Icons
 from UI.timeline import Timeline
 from UI.widgets import IconButton, IconTextButton
@@ -21,14 +24,14 @@ class PlayerPanel(QWidget):
         self.lead_seconds = 5.0  # Prev/Next land this long before a highlight
         self._highlight_times: list[float] = []
 
-        self.video = QVideoWidget()
+        self.allow_preload = lambda: True   # set by the owner: setting on, not recording, window shown
+        self.player = DualPlayer(allowed=lambda: self.allow_preload())
+        self.video = self.player.view
         self.video.setMinimumHeight(260)
-        self.video.setStyleSheet("background: #000;")
-        self.audio = QAudioOutput()
-        self.audio.setVolume(0.8)
-        self.player = QMediaPlayer()
-        self.player.setAudioOutput(self.audio)
-        self.player.setVideoOutput(self.video)
+        self._path = ""
+        self._predict = QTimer(self)
+        self._predict.setInterval(700)
+        self._predict.timeout.connect(self._prepare_next)
 
         self.timeline = Timeline()
         self.play_btn = IconButton("play", "Play / pause (Space)", size=22, color=Palette.TEXT)
@@ -63,21 +66,20 @@ class PlayerPanel(QWidget):
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(lambda ms: self.timeline.set_duration(ms / 1000))
         self.player.playbackStateChanged.connect(self._on_state)
-        self.timeline.seekRequested.connect(self.seek)
+        self.timeline.seekRequested.connect(self._user_seek)
         self.play_btn.clicked.connect(self.toggle_play)
         self.prev_btn.clicked.connect(lambda: self.jump_highlight(-1))
         self.next_btn.clicked.connect(lambda: self.jump_highlight(+1))
-        self.volume.valueChanged.connect(lambda v: self.audio.setVolume(v / 100))
+        self.volume.valueChanged.connect(lambda v: self.player.set_volume(v / 100))
 
     @property
     def duration(self) -> float:
         return self.player.duration() / 1000
 
     def load(self, path: Path | None, markers: list[dict]) -> None:
-        self.player.stop()
-        self.player.setSource(QUrl.fromLocalFile(str(path)) if path else QUrl())
-        if path and hasattr(self.player, "setActiveAudioTrack"):
-            self.player.setActiveAudioTrack(0)  # track 1 = the mix (files with separate tracks)
+        self._path = str(path) if path else ""
+        self.player.unload()
+        self.player.load(self._path, at=0.0)   # shows the first frame instead of a black box
         self.timeline.set_markers(markers)
         self.timeline.set_segments([])
         self.timeline.set_position(0)
@@ -92,6 +94,11 @@ class PlayerPanel(QWidget):
     def seek(self, seconds: float) -> None:
         self.player.setPosition(int(max(0.0, seconds) * 1000))
 
+    def _user_seek(self, seconds: float) -> None:
+        """Clicking / dragging the ruler: you're looking around, so stop predicting for a moment."""
+        self.player.quiet()
+        self.seek(seconds)
+
     def skip(self, delta: float) -> None:
         self.seek(self.player.position() / 1000 + delta)
 
@@ -102,19 +109,33 @@ class PlayerPanel(QWidget):
             self.player.play()
 
     def play_from(self, seconds: float) -> None:
-        self.seek(seconds)
-        self.player.play()
+        seconds = max(0.0, seconds)
+        if not self.player.take(self._path, seconds):  # instant if it was prepared, else a normal seek
+            self.seek(seconds)
+            self.player.play()
 
-    def jump_highlight(self, direction: int) -> None:
-        pos = self.player.position() / 1000
+    def _target(self, direction: int, pos: float) -> float | None:
         if direction > 0:
             later = [t for t in self._highlight_times if t - self.lead_seconds > pos + 0.5]
-            target = later[0] if later else None
-        else:
-            earlier = [t for t in self._highlight_times if t - self.lead_seconds < pos - 1.5]
-            target = earlier[-1] if earlier else None
+            return later[0] if later else None
+        earlier = [t for t in self._highlight_times if t - self.lead_seconds < pos - 1.5]
+        return earlier[-1] if earlier else None
+
+    def jump_highlight(self, direction: int) -> None:
+        target = self._target(direction, self.player.position() / 1000)
         if target is not None:
             self.play_from(target - self.lead_seconds)
+
+    def _prepare_next(self) -> None:
+        """While playing: have the next highlight ready in the hidden player."""
+        if self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState or not self._path:
+            return
+        if not self.player.can_prepare():
+            self.player.drop_standby()
+            return
+        target = self._target(+1, self.player.position() / 1000)
+        if target is not None:
+            self.player.prepare(self._path, max(0.0, target - self.lead_seconds))
 
     def _on_position(self, ms: int) -> None:
         self.timeline.set_position(ms / 1000)
@@ -123,3 +144,7 @@ class PlayerPanel(QWidget):
     def _on_state(self, state) -> None:
         playing = state == QMediaPlayer.PlaybackState.PlayingState
         self.play_btn.setIcon(self._pause_icon if playing else self._play_icon)
+        if playing:
+            self._predict.start()
+        else:
+            self._predict.stop()

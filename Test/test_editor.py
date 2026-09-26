@@ -73,6 +73,46 @@ class TimelineTests(unittest.TestCase):
         self.assertIsNone(p.add_clip("v0.mp4", 10, 12))   # nothing left
 
 
+class HighlightClipTests(unittest.TestCase):
+    def match(self) -> EditProject:
+        """A 120 s match: kills at 20 and 23 s (one moment), a death at 50 s, a bookmark at 90 s."""
+        p = EditProject()
+        p.add_source("m.mp4", 120, markers=[
+            {"type": "kill", "label": "Kill", "involves_me": True, "video_time": 20},
+            {"type": "multikill", "label": "Double kill", "involves_me": True, "video_time": 23},
+            {"type": "death", "label": "Died", "involves_me": True, "video_time": 50},
+            {"type": "kill", "label": "Their kill", "involves_me": False, "video_time": 60},
+            {"type": "bookmark", "label": "Bookmark 1", "involves_me": True, "video_time": 90},
+        ])
+        return p
+
+    def test_each_highlight_becomes_its_own_clip(self):
+        p = self.match()
+        self.assertEqual(p.add_highlights("m.mp4", pre=10, post=5), 2)
+        self.assertEqual([(c.start, c.end, c.label) for c in p.clips],
+                         [(10, 28, "Kill + Double kill"), (80, 95, "Bookmark 1")])
+
+    def test_keep_highlights_ripples_the_rest_up(self):
+        p = self.match()
+        p.add_clip("m.mp4", 0, 120, "whole match")
+        p.add_clip("m.mp4", 100, 110, "after")
+        self.assertEqual(p.keep_highlights(0, pre=10, post=5), 2)
+        self.assertEqual([c.label for c in p.clips], ["Kill + Double kill", "Bookmark 1", "after"])
+        self.assertEqual(p.clip_offset(2), 18 + 15)          # no gaps: the last clip moved up
+
+    def test_keep_highlights_stays_inside_the_clip(self):
+        p = self.match()
+        p.add_clip("m.mp4", 15, 92)                          # cuts through both highlight windows
+        self.assertEqual(p.keep_highlights(0, pre=10, post=5), 2)
+        self.assertEqual([(c.start, c.end) for c in p.clips], [(15, 28), (80, 92)])
+
+    def test_clip_without_highlights_is_left_alone(self):
+        p = self.match()
+        p.add_clip("m.mp4", 30, 70)
+        self.assertEqual(p.keep_highlights(0, pre=2, post=2), 0)
+        self.assertEqual([(c.start, c.end) for c in p.clips], [(30, 70)])
+
+
 class ProjectStoreTests(TempDirTest):
     def test_roundtrip_newest_first(self):
         store = ProjectStore(self.tmp / "Projects")
@@ -161,3 +201,43 @@ class RealExportTests(TempDirTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerMomentTests(unittest.TestCase):
+    """Bug: a Highlights-mode video (highlights back to back) came out as ONE long clip, because the
+    padded windows overlap and used to be merged. Now every moment is its own clip."""
+
+    @staticmethod
+    def m(t, label="Kill", kind="kill"):
+        return {"type": kind, "label": label, "involves_me": True, "video_time": t}
+
+    def test_back_to_back_highlights_stay_separate_clips(self):
+        from Core.clips import Segment
+        segs = Segment.per_moment([self.m(10), self.m(22), self.m(35), self.m(47)], pre=10, post=5, duration=60)
+        self.assertEqual(len(segs), 4)
+        for a, b in zip(segs, segs[1:]):
+            self.assertEqual(a.end, b.start)               # touching, never overlapping: no footage twice
+        self.assertEqual((segs[0].start, segs[0].end), (0, 16))   # edge halfway between 10 and 22
+
+    def test_a_multikill_is_one_moment(self):
+        from Core.clips import Segment
+        segs = Segment.per_moment([self.m(20), self.m(22, "Double kill", "multikill"), self.m(60)], pre=5, post=5)
+        self.assertEqual([s.label for s in segs], ["Kill + Double kill", "Kill"])
+
+    def test_edges_prefer_the_real_cuts_of_a_highlights_video(self):
+        from Core.clips import Segment
+        segs = Segment.per_moment([self.m(10), self.m(22)], pre=10, post=5, cuts=[13.5, 40])
+        self.assertEqual((segs[0].end, segs[1].start), (13.5, 13.5))
+
+    def test_far_apart_highlights_keep_their_padding(self):
+        from Core.clips import Segment
+        segs = Segment.per_moment([self.m(20), self.m(90)], pre=10, post=5)
+        self.assertEqual([(s.start, s.end) for s in segs], [(10, 25), (80, 95)])
+
+    def test_editor_splits_a_highlights_video_into_moments(self):
+        p = EditProject()
+        p.add_source("hl.mp4", 135, markers=[self.m(t) for t in (8, 20, 33, 47, 60, 74, 88, 101, 114)])
+        p.add_clip("hl.mp4", 0, 135)
+        self.assertEqual(p.keep_highlights(0, pre=10, post=5), 9)
+        self.assertAlmostEqual(p.duration, 119, delta=0.01)   # 0 -> 119 (last kill + 5 s): nothing lost or doubled
+        self.assertTrue(all(a.end == b.start for a, b in zip(p.clips, p.clips[1:])))

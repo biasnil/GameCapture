@@ -6,7 +6,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QCheckBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+from PyQt6.QtWidgets import (QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton,
                              QSizePolicy, QSplitter, QVBoxLayout, QWidget)
 
@@ -17,6 +17,7 @@ from Core.formatting import Format
 from Core.library import RecordingEntry, RecordingLibrary
 from Theme.palette import Palette
 from UI.cards import CardStrip
+from UI.highlight_filter import HighlightFilter
 from UI.icons import Icons
 from UI.player import PlayerPanel
 from UI.shell import Shell
@@ -34,7 +35,7 @@ class _ExportSignals(QObject):
 
 
 class SessionsPage(QWidget):
-    DEFAULT_TYPES = {"kill", "multikill", "objective", "ace", "first_blood", "bookmark"}  # pre-ticked for export
+    DEFAULT_TYPES = Segment.HIGHLIGHT_TYPES  # pre-ticked for export
 
     def __init__(self, win: "MainWindow") -> None:
         super().__init__()
@@ -101,6 +102,7 @@ class SessionsPage(QWidget):
 
         self.player = PlayerPanel()
         self.player.lead_seconds = self.cfg.clips.pre_seconds
+        self.player.allow_preload = self.win.preload_allowed
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.addWidget(self.player)
@@ -120,7 +122,7 @@ class SessionsPage(QWidget):
         self.hl_list = QListWidget()
         self.hl_list.setTextElideMode(Qt.TextElideMode.ElideRight)  # long names end in "..." (full text on hover)
         self.hl_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.show_all_cb = QCheckBox("Show everyone's events")
+        self.filter = HighlightFilter()
         sel_all, sel_none = QPushButton("All"), QPushButton("None")
         sel_all.clicked.connect(lambda: self._set_all_checked(True))
         sel_none.clicked.connect(lambda: self._set_all_checked(False))
@@ -152,7 +154,7 @@ class SessionsPage(QWidget):
         side = QVBoxLayout()
         side.setContentsMargins(0, 0, 0, 0)
         side.addLayout(head)
-        side.addWidget(self.show_all_cb)
+        side.addWidget(self.filter)
         side.addWidget(self.hl_list, 1)
         side.addLayout(form)
         for w in (self.seg_label, self.progress, self.export_label):
@@ -171,7 +173,7 @@ class SessionsPage(QWidget):
         self.hl_list.currentItemChanged.connect(self._on_current_item)
         self.hl_list.itemDoubleClicked.connect(
             lambda item: self.select_marker(item.data(Qt.ItemDataRole.UserRole), play=True))
-        self.show_all_cb.toggled.connect(lambda _: self._fill_highlights())
+        self.filter.changed.connect(self._on_filter)
         self.pre_spin.valueChanged.connect(self._on_padding)
         self.post_spin.valueChanged.connect(self._on_padding)
         self.star_btn.toggled.connect(self._on_star)
@@ -207,6 +209,8 @@ class SessionsPage(QWidget):
         self._check_state.clear()
         self.strip.mark_selected(entry)
         self.player.load(entry.video, entry.markers)
+        self.filter.set_markers(entry.markers)
+        self._filter_timeline()
         self._fill_highlights()
         self._show_entry_header()
         self.export_label.setText("")
@@ -256,9 +260,8 @@ class SessionsPage(QWidget):
         self.hl_list.blockSignals(True)
         self.hl_list.clear()
         markers = self.current.markers if self.current else []
-        show_all = self.show_all_cb.isChecked()
         for m in sorted(markers, key=lambda m: m["video_time"]):
-            if not show_all and not m.get("involves_me"):
+            if not self.filter.accepts(m):
                 continue
             item = QListWidgetItem(Icons.marker_icon(m.get("type", ""), bool(m.get("favorite"))),
                                    f"{Format.duration(m['video_time'])}    {m['label']}")
@@ -274,12 +277,24 @@ class SessionsPage(QWidget):
         if self.hl_list.count() == 0:
             text = ("Select a recording above" if self.current is None else
                     "No highlights - this was a manual recording" if not markers else
-                    "No highlights involving you (tick 'Show everyone's events')")
+                    "Nothing matches the filters above")
             placeholder = QListWidgetItem(text)
             placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
             self.hl_list.addItem(placeholder)
         self.hl_list.blockSignals(False)
         self._update_segments()
+
+    def _on_filter(self) -> None:
+        self._fill_highlights()
+        self._filter_timeline()
+
+    def _filter_timeline(self) -> None:
+        """The timeline shows the same kinds of moments as the list (plus match start / end)."""
+        markers = self.current.markers if self.current else []
+        shown = [m for m in markers if self.filter.accepts(m) or m.get("type") in self.filter.HIDDEN_TYPES]
+        self.player.timeline.set_markers(shown)
+        if self.current_marker is not None:
+            self.player.timeline.set_selected(self.current_marker)
 
     def select_marker(self, m: dict | None, play: bool = False) -> None:
         if not m or self.current is None:
@@ -363,8 +378,9 @@ class SessionsPage(QWidget):
     # ================================================================ export
 
     def _segments(self, markers: list[dict] | None = None) -> list[Segment]:
-        return Segment.from_markers(self._checked_markers() if markers is None else markers,
-                                    self.pre_spin.value(), self.post_spin.value(), self.player.duration or None)
+        cuts = self.current.game.get("cuts", []) if self.current else []
+        return Segment.per_moment(self._checked_markers() if markers is None else markers,
+                                  self.pre_spin.value(), self.post_spin.value(), self.player.duration or None, cuts)
 
     def _update_segments(self) -> None:
         segs = self._segments()

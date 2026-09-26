@@ -47,6 +47,24 @@ python main.py live       # what League's live API reports right now (League onl
 ```
 Desktop shortcut: point it at `GameCapture.pyw` and set its icon to `Assets\app_icon.ico`.
 
+## Build an .exe
+```powershell
+build.bat                 # sets up .venv, downloads ffmpeg if needed, runs the tests, builds
+build.bat --skip-tests    # faster
+build.bat --zip           # also dist\GameCapture.zip, ready to share
+build.bat --clean         # wipe build\ and dist\ first
+```
+The result is `dist\GameCapture\`: **GameCapture.exe** (the app) and **GameCaptureCLI.exe** (console:
+`GameCaptureCLI.exe check`, `run`, `test`, `live`). Copy the whole folder - the .exe needs its
+`_internal\` folder. ffmpeg is bundled; a `Bin\ffmpeg.exe` placed next to GameCapture.exe overrides it.
+Settings stay in `%APPDATA%\GameCapture`, so rebuilding or moving the app never resets them.
+The build is described in `GameCapture.spec` (PyInstaller).
+
+Sharing a build: bump `VERSION` in `Core/version.py`, run `build.bat --zip` and send
+`dist\GameCapture-<version>.zip`. The folder includes **Read me first.txt** for your friends
+(SmartScreen warning, first-run setup, where files go, how to update). The version shows in the window
+title, Settings > App and the .exe's file properties.
+
 ## Supported games
 
 | Game | How it's detected | Highlights |
@@ -99,6 +117,9 @@ Every other game records whole sessions.
 If you stop a Session recording by hand, it stays stopped until you close the game.
 
 ## The app
+- **Sessions** - highlight **filter chips** above the list (Kills 6, Deaths 5, Objectives 3, Towers,
+  Bookmarks, Everyone): click to show / hide that kind in the list and on the timeline, double-click
+  to show only that kind.
 - **Sessions** - recording cards (thumbnail, game, character, result, KDA - whatever the game
   reports), highlight title bar (favourite / folder / delete / Share clip / Edit / Export clips /
   Highlight reel), player, and an icon timeline above a minute ruler. Share copies the clip so you
@@ -129,6 +150,8 @@ If you stop a Session recording by hand, it stays stopped until you close the ga
 | Left / Right | -5 s / +5 s |
 | N / P | next / previous highlight (editor: next / previous clip) |
 | S | editor: split the clip at the playhead |
+| H | editor: keep only the highlights of the selected clip |
+| Ctrl+Z / Ctrl+Y | editor: undo / redo |
 | Delete | editor: remove the selected clip |
 | Ctrl+D | editor: duplicate the selected clip |
 | Ctrl+Alt+R | manual record (works in game) |
@@ -140,17 +163,37 @@ Outplayed-style editing, in the sidebar under **Video editor**:
 
 - **Project videos** (left): videos you imported (**Import videos**: any recording, clip or other
   `.mp4` / `.mkv` / `.mov` / `.webm`) or sent from Sessions with **Edit**. Double-click one (or
-  **Add to timeline**) to put the whole video on the timeline. Right-click to rename or remove it.
+  **Highlights**) to put each of its highlights on the timeline as its own clip (padding from
+  Settings > Clips); **Whole video** adds it as one clip. Right-click to rename or remove it.
 - **Timeline** (bottom): one filmstrip per clip with its highlight icons. Click to select and seek,
-  drag a clip to move it, drag its edges to trim it. **Split** (scissors / `S`) cuts the clip at the
-  playhead, **Duplicate** (`Ctrl+D`) and **Delete** do what they say. The preview plays the clips in
-  order, straight across cuts and files.
+  drag a clip to move it, drag its edges to trim it. The timeline is magnetic: deleting or trimming
+  a clip closes the gap (ripple), so there are never holes. **Keep highlights** (lightning / `H`)
+  turns the selected clip into one clip per highlight and cuts out everything in between.
+  **Split** (scissors / `S`) cuts the clip at the playhead, **Duplicate** (`Ctrl+D`) and **Delete** do
+  what they say, and **Undo / Redo** (`Ctrl+Z` / `Ctrl+Y`) cover every edit. The preview plays the
+  clips in order, straight across cuts and files.
+- **Zoom**: `Ctrl` + mouse wheel (or the magnifier buttons) zooms the timeline around the mouse, the
+  wheel scrolls it; the ruler gets finer as you zoom and the view follows the playhead while playing.
+- **Elements** tab: add **Text** (titles, captions - outlined, any colour, **any font installed in
+  Windows**, bold / italic) or an **Image** (logo, sticker; PNG transparency works). **Animated GIF,
+  WebP and APNG** play in the preview and in the export, looping for as long as they show. Drag it on the preview to move it, drag its
+  corner to resize it; set size, opacity and when it shows (or **Fit to clip**). Elements sit on the
+  thin track above the clips, where you drag them in time and trim their edges. They are burned
+  into the export exactly as the preview shows them.
 - **Export settings**: resolution (same as the video, 1440p ... 480p - never upscaled), frame rate,
   quality and sound. **Export video** renders one `.mp4` into your clips folder, using the GPU encoder
   the recorder picked. Clips of different sizes are letterboxed; clips without sound get silence.
 - **Projects** are saved automatically as you edit (`Projects\` in the [settings folder](#settings-and-data)).
   Switch between them, start a **New project** or delete one from the top bar - editing never
   changes your original videos, and deleting a project keeps them.
+
+## Smooth jumps (preloading)
+Jumping to another spot in a video normally makes the player go back to the last full picture
+(keyframe) and decode forward from there, which shows as a short stutter. So while you watch, the
+**next** highlight (Sessions) or the next clip that starts somewhere else (editor) is prepared in a
+second, hidden player; Next highlight / the cut then just swaps players. It only runs while you're
+watching, with the window open, and never while recording (it would compete with the game for the
+GPU). Turn it off in Settings > App > **Preload the next clip** (it uses roughly 100-200 MB while on).
 
 ## Settings and data
 Settings live in your user profile, so updating, moving or re-downloading GameCapture never loses them:

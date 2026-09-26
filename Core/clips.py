@@ -21,6 +21,9 @@ class Segment:
     end: float
     label: str
 
+    # Your moments that count as highlights by default (Sessions pre-ticks these, the editor cuts them)
+    HIGHLIGHT_TYPES = frozenset({"kill", "multikill", "objective", "ace", "first_blood", "bookmark"})
+
     @property
     def duration(self) -> float:
         return self.end - self.start
@@ -45,6 +48,40 @@ class Segment:
             else:
                 segments.append(cls(start, end, m["label"]))
         return segments
+
+
+    MOMENT_GAP = 4.0  # s: events this close are one moment (kill -> double kill), anything further is its own
+
+    @classmethod
+    def per_moment(cls, markers: list[dict], pre: float, post: float, duration: float | None = None,
+                   cuts: list[float] | tuple = ()) -> list["Segment"]:
+        """One clip per highlight moment, with a clear edge between them - never merged into one long clip.
+
+        Where two padded windows would overlap, the two clips meet at a real cut in between (`cuts`: where a
+        Highlights-mode video jumps in time), else halfway between the two moments - so a Highlights video
+        splits into back-to-back clips with no footage lost or used twice."""
+        groups: list[list[tuple[float, str]]] = []
+        for m in sorted(markers, key=lambda m: m["video_time"]):
+            t = float(m["video_time"])
+            if groups and t - groups[-1][-1][0] <= cls.MOMENT_GAP:
+                groups[-1].append((t, m["label"]))
+            else:
+                groups.append([(t, m["label"])])
+        segments: list[Segment] = []
+        for group in groups:
+            end = group[-1][0] + post
+            labels = list(dict.fromkeys(label for _, label in group))   # unique, in order
+            segments.append(cls(max(0.0, group[0][0] - pre), min(end, duration) if duration else end,
+                                " + ".join(labels)))
+        for i in range(len(segments) - 1):
+            a, b = segments[i], segments[i + 1]
+            if a.end > b.start:
+                lo, hi = groups[i][-1][0], groups[i + 1][0][0]
+                mid = (lo + hi) / 2
+                between = [c for c in cuts if lo < c < hi]
+                edge = min(between, key=lambda c: abs(c - mid)) if between else mid
+                a.end = b.start = edge   # they meet exactly there: nothing lost, nothing twice
+        return [s for s in segments if s.duration > 0.05]
 
 
 class ClipExporter:
