@@ -1,0 +1,38 @@
+GameCapture - read me first
+===========================
+
+START
+  Double-click GameCapture.exe. Keep the whole folder together - the .exe needs the _internal
+  folder next to it. Put the folder anywhere you like (e.g. Documents\GameCapture) and pin the
+  .exe to Start or make a desktop shortcut.
+
+"WINDOWS PROTECTED YOUR PC"
+  The app isn't signed with a paid certificate, so Windows SmartScreen warns the first time.
+  Click "More info" -> "Run anyway". Some antivirus tools also flag unsigned Python apps; if
+  yours quarantines it, add the folder as an exception.
+
+NEEDS
+  Windows 10 (version 2004 or newer) or Windows 11, and up-to-date GPU drivers (NVIDIA, AMD or
+  Intel) so recording uses the graphics card instead of the CPU.
+
+FIRST RUN
+  - Settings > Games: switch on the games you play, or "Add a game" for anything not listed.
+  - Settings > Capture: pick a preset (Medium is a good start). A banner warns if something would
+    cost in-game FPS.
+  - Counter-Strike 2: Settings > Counter-Strike 2 > Install, then restart CS2 once.
+  - Hotkeys (work in game): Ctrl+Alt+R record / stop, Ctrl+Alt+B bookmark a moment.
+  - Closing the window keeps it recording from the tray (icon near the clock).
+
+WHERE THINGS ARE
+  Recordings and clips:  Videos\GameCapture (change it in Settings > Storage)
+  Settings and logs:     %APPDATA%\GameCapture  (Settings > App > Open settings folder)
+
+UPDATE
+  Close GameCapture (tray icon > Quit), replace the folder with the new one. Your settings,
+  recordings and editor projects are kept.
+
+UNINSTALL
+  Delete the folder, and %APPDATA%\GameCapture if you want your settings gone too.
+
+PROBLEMS
+  Send the file %APPDATA%\GameCapture\Logs\gamecapture.log (and ffmpeg.log next to it).

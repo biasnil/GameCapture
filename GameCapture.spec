@@ -9,10 +9,14 @@
 # A Bin\ffmpeg.exe placed next to GameCapture.exe overrides the bundled one.
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = os.path.abspath(SPECPATH)
+sys.path.insert(0, ROOT)
+from Core.version import AppInfo  # noqa: E402
+
 FFMPEG = os.path.join(ROOT, "Bin", "ffmpeg.exe")
 ICON = os.path.join(ROOT, "Assets", "app_icon.ico")
 
@@ -50,6 +54,26 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+
+def version_info():
+    """File properties (right-click the .exe > Details): product name and version."""
+    try:   # Windows-only helpers; a problem here must never stop the build
+        from PyInstaller.utils.win32.versioninfo import (FixedFileInfo, StringFileInfo, StringStruct, StringTable,
+                                                         VarFileInfo, VarStruct, VSVersionInfo)
+        v = AppInfo.version_tuple()
+        text = ".".join(map(str, v))
+        return VSVersionInfo(
+            ffi=FixedFileInfo(filevers=v, prodvers=v),
+            kids=[StringFileInfo([StringTable("040904B0", [
+                      StringStruct("ProductName", AppInfo.NAME), StringStruct("FileDescription", "Game recorder"),
+                      StringStruct("FileVersion", text), StringStruct("ProductVersion", text),
+                      StringStruct("OriginalFilename", "GameCapture.exe")])]),
+                  VarFileInfo([VarStruct("Translation", [1033, 1200])])])
+    except Exception as exc:
+        print(f"WARNING: no version details in the .exe ({exc})")
+        return None
+
+
 common = dict(
     exclude_binaries=True,
     debug=False,
@@ -57,6 +81,7 @@ common = dict(
     strip=False,
     upx=False,                 # UPX-packed Qt DLLs trip antivirus and start slower
     icon=ICON,
+    version=version_info(),
 )
 app = EXE(pyz, a.scripts, [], name="GameCapture", console=False, **common)
 cli = EXE(pyz, a.scripts, [], name="GameCaptureCLI", console=True, **common)

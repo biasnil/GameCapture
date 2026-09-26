@@ -3,7 +3,7 @@ rem Builds GameCapture into dist\GameCapture\ (GameCapture.exe + GameCaptureCLI.
 rem
 rem   build.bat               set up .venv if needed, test, build
 rem   build.bat --skip-tests  build without running the tests
-rem   build.bat --zip         also make dist\GameCapture.zip to share
+rem   build.bat --zip         also make dist\GameCapture-<version>.zip to share (version: Core\version.py)
 rem   build.bat --clean       delete build\ and dist\ first
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -69,15 +69,19 @@ if exist "dist\GameCapture\GameCapture.exe" (
 "%PY%" -m PyInstaller --noconfirm GameCapture.spec
 if errorlevel 1 goto fail
 
+copy /y "Tools\Read me first.txt" "dist\GameCapture\" >nul
+for /f "delims=" %%v in ('call "%PY%" -c "from Core.version import AppInfo; print(AppInfo.VERSION)"') do set "VERSION=%%v"
+set "ZIP=dist\GameCapture-%VERSION%.zip"
+
 if defined MAKE_ZIP (
     echo Zipping ...
-    powershell -NoProfile -Command "Compress-Archive -Path 'dist\GameCapture' -DestinationPath 'dist\GameCapture.zip' -Force"
+    powershell -NoProfile -Command "Compress-Archive -Path 'dist\GameCapture' -DestinationPath '%ZIP%' -Force"
     if errorlevel 1 goto fail
 )
 
 echo.
-echo Done:  %CD%\dist\GameCapture\GameCapture.exe
-if defined MAKE_ZIP echo Zip:   %CD%\dist\GameCapture.zip
+echo Done:  %CD%\dist\GameCapture\GameCapture.exe  (version %VERSION%)
+if defined MAKE_ZIP echo Zip:   %CD%\%ZIP%  - ready to send
 echo Copy the whole dist\GameCapture folder - the .exe needs the _internal folder next to it.
 exit /b 0
 

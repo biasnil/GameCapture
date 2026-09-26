@@ -60,6 +60,11 @@ The result is `dist\GameCapture\`: **GameCapture.exe** (the app) and **GameCaptu
 Settings stay in `%APPDATA%\GameCapture`, so rebuilding or moving the app never resets them.
 The build is described in `GameCapture.spec` (PyInstaller).
 
+Sharing a build: bump `VERSION` in `Core/version.py`, run `build.bat --zip` and send
+`dist\GameCapture-<version>.zip`. The folder includes **Read me first.txt** for your friends
+(SmartScreen warning, first-run setup, where files go, how to update). The version shows in the window
+title, Settings > App and the .exe's file properties.
+
 ## Supported games
 
 | Game | How it's detected | Highlights |

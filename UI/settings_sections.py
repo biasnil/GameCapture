@@ -16,6 +16,7 @@ from Capture.presets import VideoPresets
 from Core.formatting import Format
 from Core.library import RecordingLibrary
 from Core.paths import Paths
+from Core.version import AppInfo
 from Games.registry import GameInfo, GameRegistry, RecordingModes
 from Theme.palette import Palette
 from UI.icons import Icons
@@ -1090,7 +1091,7 @@ class AppSection(SettingsSection):
     def __init__(self, page) -> None:
         super().__init__(page)
         g, hk = self.cfg.gui, self.cfg.hotkeys
-        self.body.addWidget(SectionHeader("App", "Window, tray and shortcuts"))
+        self.body.addWidget(SectionHeader("App", f"Window, tray and shortcuts  ·  {AppInfo.title()}"))
         self.tray = self.toggle_row("Keep running in the tray", "Closing the window keeps your games recording",
                                     lambda: g.minimize_to_tray, lambda on: setattr(g, "minimize_to_tray", on))
         self.start_min = self.toggle_row("Start minimised", "Open straight to the tray",

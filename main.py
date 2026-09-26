@@ -18,6 +18,7 @@ import time
 from Core.config import AppConfig
 from Core.engine import Engine
 from Core.paths import Paths
+from Core.version import AppInfo
 from Core.logging_setup import LogSetup
 
 log = logging.getLogger("gamecapture")
@@ -125,7 +126,7 @@ class GameCaptureCLI:
         args = parser.parse_args(argv)
         cfg = AppConfig.load()
         LogSetup.configure(cfg.resolved_log_dir(), cfg.log_level)
-        log.info("Settings: %s", Paths.CONFIG)
+        log.info("%s - settings: %s", AppInfo.title(), Paths.CONFIG)
         return cls(cfg).dispatch(args.command, args.seconds)
 
 

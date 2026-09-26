@@ -19,6 +19,7 @@ from Core.engine import Engine
 from Core.formatting import Format
 from Core.library import RecordingEntry, RecordingLibrary
 from Core.storage import StorageManager
+from Core.version import AppInfo
 from Theme.palette import Palette
 from UI.clips_page import ClipsPage
 from UI.editor_page import EditorPage
@@ -59,7 +60,7 @@ class MainWindow(QMainWindow):
         self._was_capturing = False
         self._notify_saved_pending = False
 
-        self.setWindowTitle("GameCapture")
+        self.setWindowTitle(AppInfo.title())
         self.setWindowIcon(Icons.app_icon())
         self.resize(1360, 860)
         self._build_ui()
