@@ -144,7 +144,13 @@ class GamesSection(SettingsSection):
 
     def __init__(self, page) -> None:
         super().__init__(page)
-        self.body.addWidget(SectionHeader("Games", "Choose which games GameCapture records automatically"))
+        add_btn = IconTextButton("plus", "Add a game", primary=True)
+        add_btn.setToolTip("Record any game: pick its .exe and it's recorded whenever it runs")
+        add_btn.clicked.connect(self.add_game)
+        head = QHBoxLayout()
+        head.addWidget(SectionHeader("Games", "Choose which games GameCapture records automatically"), 1)
+        head.addWidget(add_btn, 0, Qt.AlignmentFlag.AlignTop)
+        self.body.addLayout(head)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search for a game")
         self.search.setClearButtonEnabled(True)
@@ -155,16 +161,32 @@ class GamesSection(SettingsSection):
         self.grid.setSpacing(8)
         self.body.addLayout(self.grid)
         note = QLabel(f"Highlights = detected automatically. Bookmarks = press {Format.hotkey(self.cfg.hotkeys.bookmark)} "
-                      f"after a great play. Planned games aren't auto-detected yet - record them with the Record "
-                      f"button or {Format.hotkey(self.cfg.hotkeys.toggle)}.")
+                      f"after a great play. Game not listed? Use Add a game - any game works - or record anything "
+                      f"with the Record button or {Format.hotkey(self.cfg.hotkeys.toggle)}.")
         note.setObjectName("Muted")
         note.setWordWrap(True)
         self.body.addWidget(note)
         self.finish()
+        self.tiles: list[GameTile] = []
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        """(Re)create the tiles - after a game was added or removed."""
+        for tile in self.tiles:
+            tile.deleteLater()
         self.tiles = [GameTile(g, self) for g in GameRegistry.all()]
         for tile in self.tiles:
-            tile.clicked.connect(page.open_game)
+            tile.clicked.connect(self.page.open_game)
         self._layout_tiles()
+
+    def add_game(self) -> None:
+        from UI.add_game import AddGameDialog, CustomGames
+        dialog = AddGameDialog(self, taken=CustomGames.taken_executables(self.cfg))
+        if dialog.exec() != AddGameDialog.DialogCode.Accepted:
+            return
+        game_id = CustomGames.add(self.cfg, dialog.game_name, dialog.exe_name)
+        self.changed()
+        self.page.games_changed(select=game_id)
 
     def _layout_tiles(self) -> None:
         q = self.search.text().strip().lower()
@@ -180,6 +202,7 @@ class GamesSection(SettingsSection):
         self.cfg.game(game_id).enabled = on
         self.changed()
         self.page.refresh_my_games()
+        self.page.win.engine.sync_game_watchers()
 
     def load(self) -> None:
         for tile in self.tiles:
@@ -226,8 +249,8 @@ class GameDetailSection(SettingsSection):
                                            "Comma-separated game mode ids, e.g. PRACTICETOOL, ARAM, CHERRY (Arena)"))
         if game.id == "cs2":
             self._build_cs2()
-        if game.id == "deadlock":
-            self._build_deadlock()
+        if game.custom:
+            self._build_custom()
         if game.support == "auto" and game.id != "tft":
             self.procs = QLineEdit()
             self.procs.setFixedWidth(300)
@@ -235,7 +258,10 @@ class GameDetailSection(SettingsSection):
             self.procs.editingFinished.connect(self._save_processes)
             self.body.addWidget(SettingRow("Game executable", self.procs,
                                            "How GameCapture spots the game (Task Manager > Details). "
-                                           "Only change it if a game update renames it"))
+                                           + ("Separate several with commas" if game.custom
+                                              else "Only change it if a game update renames it")))
+        if game.custom:
+            self._build_remove()
 
         self.body.addWidget(self.label("How it works"))
         how = QLabel(game.how)
@@ -265,7 +291,7 @@ class GameDetailSection(SettingsSection):
         from Games.cs2 import CS2Installer
         opts = self.cfg.game("cs2").options
         opts.setdefault("gsi_port", 3021)
-        opts.setdefault("gsi_token", CS2Installer.new_token())
+        opts.setdefault("gsi_token", CS2Installer.installed_token() or CS2Installer.new_token())
         return opts
 
     def _refresh_cs2(self) -> None:
@@ -298,67 +324,47 @@ class GameDetailSection(SettingsSection):
             self._cs2_opts()["gsi_port"] = port
             self.changed(restart="CS2 port")
 
-    # ---------- Deadlock ----------
+    # ---------- games you added ----------
 
-    def _build_deadlock(self) -> None:
-        self.body.addWidget(self.label("Match videos (deadlock-api.com)"))
-        opts = self.cfg.game("deadlock").options
-        self.dl_split = ToggleSwitch(opts.get("split", True))
-        self.dl_split.toggled.connect(lambda on: self._dl_set("split", on))
-        self.body.addWidget(SettingRow("One video per match", self.dl_split,
-                                       "After you close Deadlock, cut the session into matches labelled with hero, "
-                                       "result and K/D/A. Off = keep one video with every match marked"))
-        self.dl_account = QLineEdit()
-        self.dl_account.setFixedWidth(200)
-        self.dl_account.editingFinished.connect(self._dl_save_account)
-        self.body.addWidget(SettingRow("Steam account ID", self.dl_account,
-                                       "Found automatically from Steam. Only fill this in if it's wrong "
-                                       "(the number in your Steam friend code)"))
-        self.dl_offset = QSpinBox()
-        self.dl_offset.setRange(-120, 120)
-        self.dl_offset.setSuffix(" s")
-        self.dl_offset.setFixedWidth(100)
-        self.dl_offset.valueChanged.connect(lambda v: self._dl_set("offset_s", v))
-        self.body.addWidget(SettingRow("Timing offset", self.dl_offset,
-                                       "If kill markers land early or late, shift them here (+ = later)"))
-        self.dl_status = QLabel()
-        self.dl_status.setObjectName("Muted")
-        self.dl_status.setWordWrap(True)
-        self.body.addWidget(self.dl_status)
+    def _build_custom(self) -> None:
+        self.name_edit = QLineEdit()
+        self.name_edit.setFixedWidth(300)
+        self.name_edit.editingFinished.connect(self._rename)
+        self.body.addWidget(SettingRow("Name", self.name_edit, "Shown on the recordings and in the file names"))
 
-    def _dl_set(self, key: str, value) -> None:
-        if not self._loading:
-            self.cfg.game("deadlock").options[key] = value
-            self.changed()
+    def _build_remove(self) -> None:
+        remove = IconTextButton("trash", "Remove game")
+        remove.clicked.connect(self._remove)
+        self.body.addWidget(SettingRow("Remove from GameCapture", remove,
+                                       "Stops recording it. Recordings you already have are kept"))
 
-    def _dl_save_account(self) -> None:
-        text = self.dl_account.text().strip()
-        opts = self.cfg.game("deadlock").options
-        if text.isdigit():
-            opts["account_id"] = int(text)
-        else:
-            opts.pop("account_id", None)
+    def _rename(self) -> None:
+        name = self.name_edit.text().strip()
+        gs = self.cfg.game(self.game.id)
+        if not name or name == gs.name:
+            self.name_edit.setText(gs.name)
+            return
+        gs.name = name
         self.changed()
+        self.page.games_changed(select=self.game.id)
 
-    def _dl_load(self) -> None:
-        from Games.deadlock import SteamAccount
-        opts = self.cfg.game("deadlock").options
-        self.dl_split.setChecked(opts.get("split", True))
-        self.dl_offset.setValue(int(opts.get("offset_s", 0)))
-        detected = SteamAccount.active_account_id()
-        self.dl_account.setPlaceholderText(str(detected) if detected else "Steam not running")
-        self.dl_account.setText(str(opts["account_id"]) if opts.get("account_id") else "")
-        enricher = getattr(self.page.win.engine, "deadlock", None)
-        waiting = len(enricher.jobs) if enricher else 0
-        self.dl_status.setText(f"{waiting} session(s) waiting for match data - new matches can take a while to "
-                               f"appear online." if waiting else "Needs internet after each session. "
-                               "Your recording stays as one video if no matches are found.")
+    def _remove(self) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+        from UI.add_game import CustomGames
+        answer = QMessageBox.question(self, "Remove game", f"Stop recording {self.game.name}?\n\n"
+                                                           "Recordings you already have are kept.")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        CustomGames.remove(self.cfg, self.game.id)
+        self.changed()
+        self.page.games_changed(select="games")
 
     # ---------- common ----------
 
     def _set_enabled(self, on: bool) -> None:
         self.cfg.game(self.game.id).enabled = on
         self.page.refresh_my_games()
+        self.page.win.engine.sync_game_watchers()
 
     def _save_skip(self) -> None:
         self.cfg.auto.skip_modes = [m.strip().upper() for m in self.skip.text().split(",") if m.strip()]
@@ -366,8 +372,13 @@ class GameDetailSection(SettingsSection):
 
     def _save_processes(self) -> None:
         names = [n.strip() for n in self.procs.text().split(",") if n.strip()]
-        self.cfg.game(self.game.id).processes = names
-        self.changed(restart=f"{self.game.name} executable")
+        gs = self.cfg.game(self.game.id)
+        if names == gs.processes or (self.game.custom and not names):
+            self.procs.setText(", ".join(gs.processes))  # a game you added always needs an .exe
+            return
+        gs.processes = names
+        self.changed()
+        self.page.win.engine.sync_game_watchers()  # takes effect now (after the game closes, if it's recording)
 
     def load(self) -> None:
         self._loading = True
@@ -384,8 +395,8 @@ class GameDetailSection(SettingsSection):
             self._refresh_cs2()
         if hasattr(self, "procs"):
             self.procs.setText(", ".join(gs.processes))
-        if self.game.id == "deadlock":
-            self._dl_load()
+        if self.game.custom:
+            self.name_edit.setText(gs.name)
         self._loading = False
 
 
@@ -773,8 +784,8 @@ class AutoRecordSection(SettingsSection):
     def __init__(self, page) -> None:
         super().__init__(page)
         a = self.cfg.auto
-        self.body.addWidget(SectionHeader("Auto-record", "What happens when a match starts and ends"))
-        self.master = self.toggle_row("Auto-record supported games", "Turn off to only record manually",
+        self.body.addWidget(SectionHeader("Auto-record", "What happens when a game or match starts and ends"))
+        self.master = self.toggle_row("Auto-record your games", "Turn off to only record manually",
                                       lambda: a.enabled, lambda on: setattr(a, "enabled", on))
         self.post = self.seconds()
         self.post.valueChanged.connect(lambda v: (setattr(a, "post_roll_seconds", v), self.changed()))
@@ -785,7 +796,8 @@ class AutoRecordSection(SettingsSection):
                                        "Short drops won't split the match into two files"))
         self.chapters = self.toggle_row("Highlight chapters in the video", "Jump between moments in any video player",
                                         lambda: a.chapters, lambda on: setattr(a, "chapters", on))
-        self.rename = self.toggle_row("Result in the file name", "e.g. LoL_..._Ahri_Win_7-2-5.mp4",
+        self.rename = self.toggle_row("Result in the file name",
+                                      "Games that report a result, e.g. <Game>_..._<Character>_Win_7-2-5.mp4",
                                       lambda: a.rename_with_result, lambda on: setattr(a, "rename_with_result", on))
         self.finish()
 
@@ -1011,7 +1023,7 @@ class AppSection(SettingsSection):
         super().__init__(page)
         g, hk = self.cfg.gui, self.cfg.hotkeys
         self.body.addWidget(SectionHeader("App", "Window, tray and shortcuts"))
-        self.tray = self.toggle_row("Keep running in the tray", "Closing the window keeps matches recording",
+        self.tray = self.toggle_row("Keep running in the tray", "Closing the window keeps your games recording",
                                     lambda: g.minimize_to_tray, lambda on: setattr(g, "minimize_to_tray", on))
         self.start_min = self.toggle_row("Start minimised", "Open straight to the tray",
                                          lambda: g.start_minimized, lambda on: setattr(g, "start_minimized", on))
@@ -1022,15 +1034,24 @@ class AppSection(SettingsSection):
             value.setObjectName("Muted")
             self.body.addWidget(SettingRow(name, value))
         hint = QLabel("Hotkeys work while in game. Change them in config.json (restart to apply).")
+        hint.setWordWrap(True)
         hint.setObjectName("Muted")
         self.body.addWidget(hint)
         self.body.addWidget(self.label("Files"))
+        where = QLabel(f"Settings, logs and editor projects are kept in {Paths.DATA}")
+        where.setObjectName("Muted")
+        where.setWordWrap(True)
+        where.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.body.addWidget(where)
         row = QHBoxLayout()
         cfg_btn = IconTextButton("app_window", "Open config.json")
         cfg_btn.clicked.connect(lambda: Shell.reveal(Paths.CONFIG))
+        data_btn = IconTextButton("folder", "Open settings folder")
+        data_btn.clicked.connect(lambda: Shell.open_path(Paths.ensure_dir(Paths.DATA)))
         log_btn = IconTextButton("folder", "Open logs folder")
         log_btn.clicked.connect(lambda: Shell.open_path(self.cfg.resolved_log_dir()))
         row.addWidget(cfg_btn)
+        row.addWidget(data_btn)
         row.addWidget(log_btn)
         row.addStretch()
         self.body.addLayout(row)

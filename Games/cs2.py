@@ -113,6 +113,17 @@ class CS2Installer:
     def new_token() -> str:
         return secrets.token_hex(16)
 
+    @classmethod
+    def installed_token(cls, cfg_dir: Path | None = None) -> str | None:
+        """The token in an already-installed file, so a fresh config keeps working with it."""
+        try:
+            installed = cls.installed_file(cfg_dir)
+            text = installed.read_text(encoding="utf-8") if installed else ""
+        except OSError:
+            return None
+        m = re.search(r'"token"\s+"([0-9a-fA-F]+)"', text)
+        return m[1] if m else None
+
 
 # ======================================================================== receive
 

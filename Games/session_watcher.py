@@ -1,5 +1,5 @@
-"""Games without an API (Apex, Valorant, Deadlock, Marvel Rivals, R.E.P.O.): record the whole time
-the game is open. Highlights come from the Bookmark hotkey."""
+"""Games without a live match API - built in (Apex, Valorant, Dota 2, ...) or added by you: record the
+whole time the game is open. Highlights come from the Bookmark hotkey."""
 from __future__ import annotations
 
 import logging
