@@ -10,6 +10,8 @@ from Capture.ffmpeg import FFmpeg
 from Core.editor import MIN_CLIP, EditProject, Element, Overlay, ProjectExporter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if os.name == "nt":  # off-screen Qt doesn't look in the Windows font folder by itself
+    os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 try:
     from PyQt6.QtWidgets import QApplication
 except ImportError:  # pragma: no cover

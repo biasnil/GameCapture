@@ -126,7 +126,8 @@ class AppDataTests(TempDirTest):
 
     def test_relative_folders_are_inside_the_app_data_folder(self):
         self.assertEqual(Paths.resolve("Logs"), Paths.DATA / "Logs")
-        self.assertEqual(Paths.resolve(Path("/abs/Logs")), Path("/abs/Logs"))
+        absolute = self.tmp / "Logs"     # a real absolute path on every OS ("/abs" has no drive on Windows)
+        self.assertEqual(Paths.resolve(absolute), absolute)
 
     def test_save_creates_the_folder(self):
         path = self.tmp / "new" / "deeper" / "config.json"
