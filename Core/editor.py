@@ -16,7 +16,7 @@ import re
 import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -333,9 +333,21 @@ class ProjectStore:
     def exists(self, project_id: str) -> bool:
         return self._file(project_id).exists()
 
+    _last_saved = datetime.min
+
+    @classmethod
+    def _stamp(cls) -> str:
+        """A save time that is always later than the previous one. Windows' clock only ticks every
+        ~15 ms, so two quick saves could otherwise get the same time and 'newest first' became random."""
+        now = datetime.now()
+        if now <= cls._last_saved:
+            now = cls._last_saved + timedelta(microseconds=1)
+        cls._last_saved = now
+        return now.isoformat(timespec="microseconds")
+
     def save(self, project: EditProject) -> Path:
         self.dir.mkdir(parents=True, exist_ok=True)
-        project.updated = datetime.now().isoformat(timespec="seconds")
+        project.updated = self._stamp()
         path = self._file(project.id)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(project.to_dict(), indent=2), encoding="utf-8")

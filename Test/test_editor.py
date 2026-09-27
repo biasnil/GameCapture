@@ -130,6 +130,27 @@ class ProjectStoreTests(TempDirTest):
         store.delete(a.id)
         self.assertEqual([p.id for p in store.list()], [b.id])
 
+    def test_newest_first_even_with_a_coarse_clock(self):
+        """Bug (Windows only): the clock there ticks every ~15 ms, so quick saves got the same time and
+        the order of the project list was random."""
+        import os
+        from datetime import datetime
+        from unittest.mock import patch
+
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 9, 27, 12, 0, 0)
+
+        store = ProjectStore(self.tmp / "Projects")
+        names = [f"P{i}" for i in range(5)]
+        with patch("Core.editor.datetime", Frozen):
+            for name in names:
+                store.save(EditProject(name))
+        for f in store.dir.glob("*.json"):          # and identical file times, like NTFS within one tick
+            os.utime(f, ns=(1_000_000_000, 1_000_000_000))
+        self.assertEqual([p.name for p in store.list()], names[::-1])
+
     def test_broken_file_is_skipped(self):
         store = ProjectStore(self.tmp)
         (self.tmp / "junk.json").write_text("{not json")
