@@ -158,7 +158,7 @@ class CustomGames:
         """Executables another game already records (League's client isn't a game you'd add)."""
         out: set[str] = set()
         for g in GameRegistry.supported():
-            if g.id not in ("league", "tft"):
+            if g.id != "league":
                 gs = cfg.games.get(g.id)
                 out.update((gs.processes if gs else None) or g.processes)
         return out

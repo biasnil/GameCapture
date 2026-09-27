@@ -227,7 +227,7 @@ class GamesSection(SettingsSection):
 
 
 class GameDetailSection(SettingsSection):
-    MODE_GAMES = ("league", "tft")   # share League's client and recording modes
+    MODE_GAMES = ("league",)   # games with Session / Match / Highlights recording modes
 
     def __init__(self, page, game: GameInfo) -> None:
         super().__init__(page)
@@ -242,7 +242,7 @@ class GameDetailSection(SettingsSection):
         self.body.addLayout(head)
         gs = self.cfg.game(game.id)
         auto_hint = ("Start recording when a match starts, stop when it ends" if game.support == "highlights"
-                     or game.id == "tft" else "Record the whole time the game is open")
+                     else "Record the whole time the game is open")
         self.switch = self.toggle_row("Auto-record", auto_hint, lambda: gs.enabled, self._set_enabled)
 
         self.mode = None
@@ -254,8 +254,7 @@ class GameDetailSection(SettingsSection):
             self.mode_hint = QLabel()
             self.mode_hint.setObjectName("Muted")
             self.mode_hint.setWordWrap(True)
-            self.body.addWidget(SettingRow("Recording mode", self.mode,
-                                           "Shared by League and TFT. Also in the top bar"))
+            self.body.addWidget(SettingRow("Recording mode", self.mode, "Also in the top bar"))
             self.body.addWidget(self.mode_hint)
         if game.id == "league":
             self.skip = QLineEdit()
@@ -268,9 +267,11 @@ class GameDetailSection(SettingsSection):
             self._build_cs2()
         if game.id == "deadlock":
             self._build_deadlock()
+        if game.id == "tft":
+            self._build_tft()
         if game.custom:
             self._build_custom()
-        if game.support == "auto" and game.id != "tft":
+        if game.support == "auto":
             self.procs = QLineEdit()
             self.procs.setFixedWidth(300)
             self.procs.setPlaceholderText(", ".join(game.processes))
@@ -426,6 +427,71 @@ class GameDetailSection(SettingsSection):
                                f"appear online." if waiting else "Needs internet after each session. "
                                "Your recording stays as one video if no matches are found.")
 
+    # ---------- Teamfight Tactics ----------
+
+    def _build_tft(self) -> None:
+        from Games.tft import REGIONS
+        self.body.addWidget(self.label("Match videos (Riot TFT match history)"))
+        opts = self.cfg.game("tft").options
+        self.tft_split = ToggleSwitch(opts.get("split", True))
+        self.tft_split.toggled.connect(lambda on: self._tft_set("split", on))
+        self.body.addWidget(SettingRow("One video per match", self.tft_split,
+                                       "After you close TFT, cut the session into matches labelled with your "
+                                       "placement and Win (top 4) / Loss. Off = keep one video with every match marked"))
+        self.tft_riot_id = QLineEdit()
+        self.tft_riot_id.setPlaceholderText("Name#TAG")
+        self.tft_riot_id.setFixedWidth(200)
+        self.tft_riot_id.editingFinished.connect(lambda: self._tft_set("riot_id", self.tft_riot_id.text().strip()))
+        self.body.addWidget(SettingRow("Riot ID", self.tft_riot_id, "The account you play TFT on"))
+        self.tft_region = QComboBox()
+        self.tft_region.addItems([r.upper() for r in REGIONS])
+        self.tft_region.setFixedWidth(160)
+        self.tft_region.currentTextChanged.connect(lambda r: self._tft_set("region", r.lower()))
+        self.body.addWidget(SettingRow("Region", self.tft_region,
+                                       "AMERICAS: NA, BR, LAN, LAS. EUROPE: EUW, EUNE, TR, ME, RU. ASIA: KR, JP. "
+                                       "SEA: OCE, SG, TW, VN"))
+        self.tft_key = QLineEdit()
+        self.tft_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tft_key.setPlaceholderText("RGAPI-...")
+        self.tft_key.setFixedWidth(300)
+        self.tft_key.editingFinished.connect(lambda: self._tft_set("api_key", self.tft_key.text().strip()))
+        self.body.addWidget(SettingRow("Riot API key", self.tft_key,
+                                       "Your own key from developer.riotgames.com (Riot doesn't allow apps to "
+                                       "ship one). Development keys expire every 24 h; a Personal key doesn't"))
+        self.tft_offset = QSpinBox()
+        self.tft_offset.setRange(-120, 120)
+        self.tft_offset.setSuffix(" s")
+        self.tft_offset.setFixedWidth(100)
+        self.tft_offset.valueChanged.connect(lambda v: self._tft_set("offset_s", v))
+        self.body.addWidget(SettingRow("Timing offset", self.tft_offset,
+                                       "If match videos start early or late, shift them here (+ = later)"))
+        self.tft_status = QLabel()
+        self.tft_status.setObjectName("Muted")
+        self.tft_status.setWordWrap(True)
+        self.body.addWidget(self.tft_status)
+
+    def _tft_set(self, key: str, value) -> None:
+        if not self._loading:
+            self.cfg.game("tft").options[key] = value
+            self.changed()
+
+    def _tft_load(self) -> None:
+        opts = self.cfg.game("tft").options
+        self.tft_split.setChecked(opts.get("split", True))
+        self.tft_riot_id.setText(opts.get("riot_id", ""))
+        self.tft_region.setCurrentText(str(opts.get("region", "americas")).upper())
+        self.tft_key.setText(opts.get("api_key", ""))
+        self.tft_offset.setValue(int(opts.get("offset_s", 0)))
+        enricher = getattr(self.page.win.engine, "tft", None)
+        waiting = len(enricher.jobs) if enricher else 0
+        if waiting:
+            text = f"{waiting} session(s) waiting for match data - new matches can take a few minutes to appear."
+        elif not opts.get("riot_id") or not opts.get("api_key"):
+            text = "Add your Riot ID and API key to get match videos. Without them TFT still records whole sessions."
+        else:
+            text = "Needs internet after each session. Your recording stays as one video if no matches are found."
+        self.tft_status.setText(text)
+
     # ---------- common ----------
 
     def _set_enabled(self, on: bool) -> None:
@@ -466,6 +532,8 @@ class GameDetailSection(SettingsSection):
             self.name_edit.setText(gs.name)
         if self.game.id == "deadlock":
             self._dl_load()
+        if self.game.id == "tft":
+            self._tft_load()
         self._loading = False
 
 

@@ -233,6 +233,8 @@ class LeagueMatchWatcher(GameWatcher):
                 log.info("Match detected in %s - skipped (skip modes)", mode)
                 self._skip_noted = True
             return
+        if game_id == "tft" and self.recorder.is_recording and self.session_run is None:
+            return  # the TFT client's own watcher is recording this session
         log.info("Match detected: %s as %s", mode, me)
         if not self.recorder.is_recording:
             self.start_recording(GameRegistry.get(game_id).prefix)

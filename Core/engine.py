@@ -24,9 +24,10 @@ class Engine:
         self.encoder: str | None = None
         self.recorder: Recorder | None = None
         self.pipeline: VideoPipeline | None = None
-        self.watcher: LeagueMatchWatcher | None = None   # League + TFT
+        self.watcher: LeagueMatchWatcher | None = None   # League (+ TFT played through League's client)
         self.watchers: list[GameWatcher] = []
         self.deadlock = None   # DeadlockEnricher (per-match videos after a session)
+        self.tft = None        # TftEnricher (same, from Riot's TFT match history)
         self._hotkeys = None
 
     def prepare(self) -> bool:
@@ -98,6 +99,15 @@ class Engine:
                                    monitor=ProcessMonitor(names), enricher=self.deadlock,
                                    account=lambda: self.cfg.game("deadlock").options.get("account_id")
                                    or SteamAccount.active_account_id())
+        if game.id == GameRegistry.TFT.id:
+            from Games.tft import TftEnricher, TftWatcher
+            if self.tft is None:
+                self.tft = TftEnricher(self.cfg.recording.resolved_output_dir(), self.ffmpeg,
+                                       lambda: self.cfg.game("tft"), self.recorder.discard)
+                self.tft.start()
+            return TftWatcher(self.cfg.auto, self.recorder, enabled=self.auto_enabled,
+                              monitor=ProcessMonitor(names), enricher=self.tft,
+                              riot_id=lambda: self.cfg.game("tft").options.get("riot_id"))
         return ProcessSessionWatcher(game, self.cfg.auto, self.recorder, enabled=self.auto_enabled,
                                      monitor=ProcessMonitor(names))
 
@@ -210,6 +220,7 @@ class Engine:
             steps.append(("match watcher", self.watcher.shutdown))
         steps.append(("recorder", self._stop_recorder))
         steps.append(("Deadlock lookups", lambda: self.deadlock and self.deadlock.stop()))
+        steps.append(("TFT lookups", lambda: self.tft and self.tft.stop()))
         for name, step in steps:
             try:
                 step()

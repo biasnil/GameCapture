@@ -71,7 +71,7 @@ title, Settings > App and the .exe's file properties.
 |---|---|---|
 | League of Legends | Riot's local Live Client Data API | Automatic: kills, deaths, assists, multikills, objectives, steals, aces |
 | Counter-Strike 2 | Valve's official Game State Integration (VAC-safe). Settings > Counter-Strike 2 > **Install**, then restart CS2 once | Automatic: kills, headshots, Double/Triple/Quadra kill, ACE, deaths, assists, round MVPs, final score |
-| Teamfight Tactics | League's local API (game mode TFT) - one video per match | Bookmarks |
+| Teamfight Tactics | The TFT client (`TFTClient-Win64-Shipping.exe`) is running; after you close it, Riot's TFT match history cuts the session into one video per match (needs your Riot ID + your own API key, Settings > Teamfight Tactics) | Per match: placement, Win (top 4) / Loss, the round you went out - plus bookmarks |
 | Deadlock | The game's process is running; after you close it, the community Deadlock API (deadlock-api.com) cuts the session into one video per match | Automatic after the session: kills, multikills, deaths - plus bookmarks |
 | Apex Legends, Valorant, Marvel Rivals, R.E.P.O. | The game's process is running - one video per play session (on by default) | Bookmarks |
 | Dota 2, Overwatch 2, Fortnite, Rocket League, Minecraft (Bedrock), PUBG, Rainbow Six Siege, GTA V, Roblox, Genshin Impact, Destiny 2, Helldivers 2, Elden Ring | The game's process is running - one video per play session (switch on in Settings > Games) | Bookmarks |
@@ -84,6 +84,11 @@ Each game can be switched on/off in Settings > Games. If a game update renames i
 it on that game's settings page - it takes effect straight away, no restart. Games without a live match
 API (Valorant, Marvel Rivals and every game you add yourself) record whole play sessions. Deadlock
 records the session too, then splits it into matches once they appear online (Settings > Deadlock).
+TFT works the same way (Settings > Teamfight Tactics): add your Riot ID (Name#TAG), region and a Riot API
+key from developer.riotgames.com - Riot doesn't allow apps to ship a key, so it has to be yours. A
+Development key expires every 24 h; register a Personal key to avoid pasting a new one each day. Riot's
+match history only has your final placement and the round you went out, not each round's result, so
+press the Bookmark hotkey for rounds you want to keep.
 
 ### Adding any game
 1. Start the game.
@@ -104,7 +109,7 @@ Settings > Capture > Audio:
   Clips keep every track; Discord-size copies keep only the mix.
 
 ## Recording modes
-For games with a live match API (League of Legends / TFT). Switch in the top bar
+For games with a live match API (League of Legends). Switch in the top bar
 (**Mode: Session | Match | Highlights**) or on the game's settings page. Applies from the next match / session.
 Every other game records whole sessions.
 
