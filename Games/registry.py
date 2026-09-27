@@ -2,7 +2,7 @@
 
 Three kinds of game:
   * built in with an API (League, CS2): highlights are detected automatically
-  * built in, process-detected (Apex, Dota 2, ...): recorded while the game's .exe is running
+  * built in, process-detected (Apex, TFT, Dota 2, ...): recorded while the game's .exe is running
   * added by you (Settings > Games > Add a game): any .exe, recorded while it is running
 
 Adding a built-in game = registering a GameInfo here (plus a watcher if it has an API)."""
@@ -40,7 +40,7 @@ class GameInfo:
 
 
 class RecordingModes:
-    """The three recording modes of games with a match API (League of Legends / TFT)."""
+    """The three recording modes of games with a match API (League of Legends)."""
     OPTIONS = (("session", "Session"), ("match", "Match"), ("highlights", "Highlights"))
     TIPS = {
         "session": "Record from when you open League until you close it - one video with every match",
@@ -60,9 +60,10 @@ class GameRegistry:
     }, "highlights", ("LeagueClient.exe", "LeagueClientUx.exe", "League of Legends.exe"), "#c89b3c",
         "Riot's local Live Client Data API: kills, deaths, assists, multikills, objectives, aces.")
     TFT = GameInfo("tft", "Teamfight Tactics", "TFT", {"TFT": "Teamfight Tactics"}, "auto",
-                   ("League of Legends.exe",), "#e0b44c",
-                   "Detected through League's local API (game mode TFT). Riot's API has no in-match "
-                   "events for TFT, so use the Bookmark hotkey for highlights.")
+                   ("TFTClient-Win64-Shipping.exe",), "#e0b44c",
+                   "Records the whole time the TFT client is open. Afterwards Riot's TFT match history "
+                   "(your own API key) cuts it into one video per match with your placement, Win (top 4) "
+                   "or Loss and the round you went out. Use the Bookmark hotkey for single rounds.")
     CS2 = GameInfo("cs2", "Counter-Strike 2", "CS2", {
         "competitive": "Competitive", "premier": "Premier", "casual": "Casual", "deathmatch": "Deathmatch",
         "scrimcomp2v2": "Wingman", "gungameprogressive": "Arms Race", "skirmish": "War Games",
@@ -158,7 +159,7 @@ class GameRegistry:
     @classmethod
     def session_games(cls) -> list[GameInfo]:
         """Every game recorded by watching for its process (everything without a match API)."""
-        return [g for g in cls.all() if g.support == "auto" and g.processes and g.id != "tft"]
+        return [g for g in cls.all() if g.support == "auto" and g.processes]
 
     @classmethod
     def all(cls) -> list[GameInfo]:

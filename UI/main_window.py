@@ -447,10 +447,9 @@ class MainWindow(QMainWindow):
         self.cfg.game("league").mode = mode
         self.mode_switch.set_value(mode)
         self.settings.changed()
-        for key in ("game:league", "game:tft"):
-            section = self.settings.sections.get(key)
-            if section is not None:
-                section.load()
+        section = self.settings.sections.get("game:league")
+        if section is not None:
+            section.load()
         log.info("Recording mode: %s", RecordingModes.TIPS[mode])
 
     def replan_video(self) -> None:

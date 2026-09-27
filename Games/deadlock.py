@@ -4,24 +4,18 @@ There's no live game API, so the session is recorded while the game is open (Pro
 Afterwards we ask the community Deadlock API (api.deadlock-api.com - free, no key) which matches you
 played: start time, length, hero, K/D/A, result. Each match is cut out of the session (stream copy,
 no re-encode) and, if the match details list deaths with their in-game time, your kills and deaths
-become timeline markers.
-
-New matches can take a while to show up in the API, so lookups are queued on disk and retried
-(2 min, 10 min, 30 min, 2 h, 6 h) - they survive restarting the app."""
+become timeline markers. The lookup queue and cutting live in Games/match_enricher.py."""
 from __future__ import annotations
 
 import json
 import logging
-import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 
-from Core.sidecar import Sidecar
-from Games.base import GameWatcher
+from Games.match_enricher import EnrichJob, MatchEnricher
 from Games.registry import GameRegistry
 from Games.session_watcher import ProcessSessionWatcher
 
@@ -183,115 +177,21 @@ class DeadlockTimeline:
         return sorted(out, key=lambda m: m["video_time"])
 
 
-# ======================================================================== enrichment queue
+# ======================================================================== enrichment
 
-@dataclass
-class EnrichJob:
-    video: str
-    account_id: int
-    rec_start: float          # unix time the recording started
-    rec_end: float
-    attempt: int = 0
-    next_try: float = 0.0
-
-
-class DeadlockEnricher:
-    RETRY_AFTER = (120, 600, 1800, 7200, 21600)
-    PRE_PAD, POST_PAD = 10.0, 15.0
-    STALE_AFTER = 600.0   # last match must end within this of the session end, else wait for newer data
+class DeadlockEnricher(MatchEnricher):
+    GAME = GameRegistry.DEADLOCK
+    QUEUE_FILE = ".deadlock_pending.json"
 
     def __init__(self, output_dir: Path, ffmpeg, settings, discard, api: DeadlockApi | None = None,
                  clock=time.time) -> None:
-        self.dir = Path(output_dir)
-        self.ffmpeg = ffmpeg
-        self.settings = settings        # callable -> GameSettings of deadlock (live)
-        self.discard = discard          # recorder.discard: deletes now or when Windows lets go
-        self.api = api or DeadlockApi()
-        self.clock = clock
-        self.file = self.dir / ".deadlock_pending.json"
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self.jobs: list[EnrichJob] = self._load()
+        super().__init__(output_dir, ffmpeg, settings, discard, api or DeadlockApi(), clock)
 
-    # ---------- queue ----------
+    def find_matches(self, job: EnrichJob) -> list[DeadlockMatch]:
+        return [m for m in (DeadlockMatch.from_history(r) for r in self.api.match_history(job.account_id))
+                if m is not None]
 
-    def _load(self) -> list[EnrichJob]:
-        try:
-            return [EnrichJob(**j) for j in json.loads(self.file.read_text(encoding="utf-8"))]
-        except (OSError, ValueError, TypeError):
-            return []
-
-    def _save(self) -> None:
-        try:
-            if self.jobs:
-                self.file.write_text(json.dumps([asdict(j) for j in self.jobs], indent=1), encoding="utf-8")
-            else:
-                self.file.unlink(missing_ok=True)
-        except OSError:
-            log.exception("Couldn't save the Deadlock lookup queue")
-
-    def enqueue(self, video: Path, account_id: int, rec_start: float, rec_end: float) -> None:
-        with self._lock:
-            self.jobs.append(EnrichJob(str(video), account_id, rec_start, rec_end, 0,
-                                       self.clock() + self.RETRY_AFTER[0]))
-            self._save()
-        log.info("Deadlock: will look up the matches in %s in %d min", Path(video).name, self.RETRY_AFTER[0] // 60)
-
-    def start(self) -> None:
-        threading.Thread(target=self._loop, name="deadlock-enricher", daemon=True).start()
-
-    def stop(self) -> None:
-        self._stop.set()
-
-    def _loop(self) -> None:
-        while not self._stop.wait(30):
-            try:
-                self.tick()
-            except Exception:
-                log.exception("Deadlock lookup failed")
-
-    def tick(self) -> None:
-        now = self.clock()
-        with self._lock:
-            due = [j for j in self.jobs if j.next_try <= now]
-        for job in due:
-            outcome = self.process(job)
-            with self._lock:
-                if outcome == "retry" and job.attempt + 1 < len(self.RETRY_AFTER):
-                    job.attempt += 1
-                    job.next_try = now + self.RETRY_AFTER[job.attempt]
-                elif job in self.jobs:
-                    self.jobs.remove(job)
-                self._save()
-
-    # ---------- one session ----------
-
-    def process(self, job: EnrichJob) -> str:
-        """-> "done" (finished or nothing to do) or "retry" (data not there yet)."""
-        video = Path(job.video)
-        if not video.exists():
-            return "done"
-        final = job.attempt + 1 >= len(self.RETRY_AFTER)
-        try:
-            history = self.api.match_history(job.account_id)
-        except Exception as exc:
-            log.info("Deadlock API unavailable (%s) - trying again later", exc)
-            return "retry"
-        matches = [m for m in (DeadlockMatch.from_history(r) for r in history) if m is not None
-                   and m.end_time > job.rec_start and m.start_time < job.rec_end]
-        matches.sort(key=lambda m: m.start_time)
-        fresh = bool(matches) and matches[-1].end_time >= job.rec_end - self.STALE_AFTER
-        if not fresh and not final:
-            log.info("Deadlock: matches for %s not in the API yet - trying again later", video.name)
-            return "retry"
-        if not matches:
-            log.info("Deadlock: no matches found for %s - keeping it as one session", video.name)
-            return "done"
-        self.apply(video, job, matches)
-        return "done"
-
-    def _plan(self, job: EnrichJob, m: DeadlockMatch) -> tuple[float, list[dict]]:
-        """Session-video time of this match's game clock 0, and its markers in session time."""
+    def plan(self, job: EnrichJob, m: DeadlockMatch) -> tuple[float, list[dict]]:
         offset = float(self.settings().options.get("offset_s", 0))
         zero = m.start_time - job.rec_start + offset
         meta = None
@@ -302,74 +202,26 @@ class DeadlockEnricher:
         kills, deaths = DeadlockTimeline.parse(meta, job.account_id)
         markers = DeadlockTimeline.markers(kills, deaths, lambda t: zero + t)
         hero = self.api.hero_name(m.hero_id)
-        markers.insert(0, {"type": "game_start", "label": f"{hero} - match start", "involves_me": False,
-                           "importance": 0, "event": {}, "video_time": round(max(0.0, zero), 2)})
-        markers.append({"type": "game_end", "label": f"Match end - {m.result}", "involves_me": False,
-                        "importance": 0, "event": {}, "video_time": round(zero + m.duration_s, 2)})
+        markers.insert(0, self.marker("game_start", f"{hero} - match start", max(0.0, zero)))
+        markers.append(self.marker("game_end", f"Match end - {m.result}", zero + m.duration_s))
         return zero, markers
 
-    def apply(self, video: Path, job: EnrichJob, matches: list[DeadlockMatch]) -> None:
-        old = Sidecar.read(video) or {}
-        bookmarks = [mk for mk in old.get("markers", []) if mk.get("type") == "bookmark"]
-        length = self.ffmpeg.duration(video) or (job.rec_end - job.rec_start)
-        split = self.settings().options.get("split", True)
-        plans = [(m, *self._plan(job, m)) for m in matches]
-        if not split:
-            self._annotate(video, old, plans, bookmarks)
-            return
-        made = []
-        for m, zero, markers in plans:
-            start = max(0.0, zero - self.PRE_PAD)
-            end = min(length, zero + m.duration_s + self.POST_PAD)
-            if end - start < 30:
-                continue  # the match isn't really in this recording
-            inside = [dict(b) for b in bookmarks if start <= b["video_time"] <= end]
-            shifted = [dict(mk, video_time=round(mk["video_time"] - start, 2)) for mk in markers + inside]
-            out = self._cut(video, m, start, end, shifted)
-            if out is None:
-                log.error("Deadlock: cutting match %d failed - keeping the full session", m.match_id)
-                for p in made:
-                    self.discard(p)
-                    self.discard(Sidecar.path_for(p))
-                return
-            made.append(out)
-        if not made:
-            self._annotate(video, old, plans, bookmarks)
-            return
-        log.info("Deadlock: split %s into %d match video(s)", video.name, len(made))
-        self.discard(Sidecar.path_for(video))
-        self.discard(video)
+    def match_file(self, m: DeadlockMatch) -> str:
+        safe = "".join(c for c in self.api.hero_name(m.hero_id) if c.isalnum()) or "Deadlock"
+        return f"{safe}_{m.result}_{m.kills}-{m.deaths}-{m.assists}"
 
-    def _cut(self, video: Path, m: DeadlockMatch, start: float, end: float, markers: list[dict]) -> Path | None:
+    def match_game(self, m: DeadlockMatch) -> dict:
         hero = self.api.hero_name(m.hero_id)
-        stamp = datetime.fromtimestamp(m.start_time).strftime("%Y-%m-%d_%H-%M-%S")
-        safe = "".join(c for c in hero if c.isalnum()) or "Deadlock"
-        final = self.dir / f"{GameRegistry.DEADLOCK.prefix}_{stamp}_{safe}_{m.result}_{m.kills}-{m.deaths}-{m.assists}.mp4"
-        tmp = final.with_name(final.stem + ".tmp.mp4")
-        r = self.ffmpeg.run(["-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", str(video),
-                             "-map", "0:v:0", "-map", "0:a?", "-dn", "-map_chapters", "-1", "-c", "copy",
-                             "-avoid_negative_ts", "make_zero", str(tmp)], timeout=600)
-        if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 1024:
-            tmp.unlink(missing_ok=True)
-            return None
-        game = {"title": hero, "champion": hero, "mode": m.mode, "result": m.result, "kills": m.kills,
+        return {"title": hero, "champion": hero, "mode": m.mode, "result": m.result, "kills": m.kills,
                 "deaths": m.deaths, "assists": m.assists, "match_id": m.match_id,
                 "game_length_s": round(m.duration_s, 1)}
-        GameWatcher.write_sidecar(final, GameRegistry.DEADLOCK.id, game, markers)
-        tmp.replace(final)
-        return final
 
-    def _annotate(self, video: Path, old: dict, plans, bookmarks: list[dict]) -> None:
-        """No split: keep one session video, but add each match's markers and a summary."""
-        markers = [mk for _, _, mks in plans for mk in mks] + bookmarks
-        ms = [m for m, _, _ in plans]
-        wins = sum(m.won is True for m in ms)
-        game = dict(old.get("game") or {}, title="Deadlock session", matches=len(ms),
-                    result=f"{wins}W {sum(m.won is False for m in ms)}L",
-                    kills=sum(m.kills for m in ms), deaths=sum(m.deaths for m in ms),
-                    assists=sum(m.assists for m in ms))
-        GameWatcher.write_sidecar(video, GameRegistry.DEADLOCK.id, game, markers)
-        log.info("Deadlock: added %d match(es) to %s", len(ms), video.name)
+    def summary(self, old_game: dict, matches: list[DeadlockMatch]) -> dict:
+        wins = sum(m.won is True for m in matches)
+        return dict(old_game, title="Deadlock session", matches=len(matches),
+                    result=f"{wins}W {sum(m.won is False for m in matches)}L",
+                    kills=sum(m.kills for m in matches), deaths=sum(m.deaths for m in matches),
+                    assists=sum(m.assists for m in matches))
 
 
 # ======================================================================== watcher
